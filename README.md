@@ -21,6 +21,9 @@ https://drive.google.com/file/d/1I7h2oe-LP4djuMwFAwhD4kmvOrsgoDEN/view?usp=shari
 Scripts can be found in easyrobust/scripts
 
 ARD: Baseline knowledge distillation with DAT
+
 KDARD: Knowledge distillation with DAT, distillation loss used to generate perturbation
+
 ARDWD: Knowledge distillation with invariance loss. Also used to generate perturbation
+
 Final: Knowledge distillation with invariance loss. Perturbation generated with all three losses (CE, KD, Invar)
