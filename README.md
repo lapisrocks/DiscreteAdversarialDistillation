@@ -3,7 +3,7 @@
 ## Installation
 ### Install from Source:
 ```bash
-$ git clone https://github.com/andyz245/RobustKnowledgeDistillation
+$ git clone https://github.com/andyz245/RobustKD.git
 $ cd easyrobust
 $ pip install -e .
 ```
