@@ -220,10 +220,10 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     if random.random() < random_start_prob:
         images = step.random_perturb(images)
 
-    for step in range(attack_steps):
+    for attack_step in range(attack_steps):
         images = images.clone().detach().requires_grad_(True)
         
-        if step == 0:
+        if attack_step == 0:
             adv_losses = temp_criterion(model(images), target)
         else:
             if attack_criterion == 'robustkd':
