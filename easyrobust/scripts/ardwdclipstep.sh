@@ -31,5 +31,6 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --distill_from_teacher=True \
 --teacher_path=/mnt/default/projects/robustkd/amlt-code/dc8ac100-34d6-475a-a2f3-fb8eded82a79/examples/imageclassification/imagenet/dat/FTCLIP.pt \
 --mode=ardwd \
+--scale_attack=True \
 --output=/mnt/default/projects/robustkd/experiments/clip \
---experiment=invarkdvit2
+--experiment=invarkdvitstep

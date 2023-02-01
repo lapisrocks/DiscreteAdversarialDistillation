@@ -3,9 +3,9 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --test_data=/mnt/default/projects/robustkd/evaluation \
 --model=vit_base_patch16_224 \
 --teacher=clip_vit_large_patch14_224 \
---workers=32 \
+--workers=2 \
 --epochs=180 \
---batch-size=32 \
+--batch-size=64 \
 --lr=0.001 \
 --drop-path=0.25 \
 --model-ema \

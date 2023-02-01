@@ -315,7 +315,9 @@ parser.add_argument('--teacher_path', default='', type=str, metavar='PATH',
 parser.add_argument('--teacher', default='vit_base_patch16_224', type=str, metavar='MODEL',
                     help='Name of model to distill from (default: "resnet50"')
 parser.add_argument('--mode', default='kd', type=str,
-                    help='type of run: kd, ard, ardwd, final, kdard')
+                    help='type of run: kd, ard, ardwd, final, kdard, invarkd')
+parser.add_argument('--scale_attack', type=bool, default=False,
+                    help='scale attack lr / step size during training')
 
 def normalize_fn(tensor, mean, std):
     """Differentiable version of torchvision.functional.normalize"""
@@ -810,6 +812,17 @@ def train_one_epoch(
     vqgan_aug = vqgan_aug.cuda()
     vqgan_aug.eval()
 
+    attack_lr = 0.1
+
+    if args.scale_attack:
+        attack_lr = 0.01
+        if epoch > 50:
+            attack_lr = 0.1
+        if epoch > 100:
+            attack_lr = 0.15
+        if epoch > 150:
+            attack_lr = 0.2
+
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
@@ -817,7 +830,6 @@ def train_one_epoch(
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
-        loss_terms = []
         
         input, target = input.cuda(), target.cuda()
         if mixup_fn is not None:
@@ -834,13 +846,15 @@ def train_one_epoch(
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
         if args.mode == 'final':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
         elif args.mode == 'kdard':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
         elif args.mode == 'ardwd':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+        elif args.mode == 'invarkd':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
         else:
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
         with torch.no_grad():
             adv_xrec = reconstruct_with_vqgan(adv_input, vqgan_aug)
@@ -849,16 +863,13 @@ def train_one_epoch(
             output2 = model(adv_xrec)
             
             kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
-            kd_loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target)
-            loss = kd_loss
-            loss_terms.append(kd_loss)
+            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
 
-            if args.mode == 'final' or args.mode == 'ardwd':
+            if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
                 distance_loss = nn.CosineEmbeddingLoss()
                 
                 y = torch.ones(teacher_output.shape[0]).cuda()
                 dl = 15 * distance_loss(output2, output, y)
-                loss_terms.append(dl)
                 loss += dl
             
         if not args.distributed:

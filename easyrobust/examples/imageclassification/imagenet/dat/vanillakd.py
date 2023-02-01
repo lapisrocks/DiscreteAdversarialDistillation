@@ -53,7 +53,7 @@ class VanillaKD(BaseClass):
             logdir,
         )
 
-    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_aug, y_true):
+    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_aug, y_true, mode):
         """
         Function used for calculating the KD loss during distillation
         :param y_pred_student (torch.FloatTensor): Prediction made by the student model
@@ -69,11 +69,19 @@ class VanillaKD(BaseClass):
         
         #kl_div = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
         #kl_div2 = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
-        
+
         kl_div = 0.25 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
+
+        if mode == 'invarkd':
+            kl_div *= 2
+
         kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_out)
-        loss = 0.25 * ce_loss(y_pred_student, y_true)
-        loss += kl_div
+
+        if mode != 'invarkd':
+            loss = 0.25 * ce_loss(y_pred_student, y_true)
+            loss += kl_div
+        else:
+            loss = kl_div
         loss += kl_div2
         #loss += (0.25) * F.cross_entropy(y_pred_aug, y_true)
         #loss = (kl_div)

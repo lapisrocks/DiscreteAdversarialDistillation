@@ -159,16 +159,29 @@ def robustkd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     return loss
 
 def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    ce_loss = SoftTargetCrossEntropy()
     loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
     temp = 15.0
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
     
-    kl_div = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    loss = ce_loss(y_pred_aug, y_true)
-    loss += kl_div
+    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+
+    return loss
+
+def invar_kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
+    distance_loss = nn.CosineEmbeddingLoss()
+    loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
+    temp = 15.0
+        
+    soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
+    soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
+    
+    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+
+    y = torch.ones(y_pred_teacher.shape[0]).cuda()
+    dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
+    loss += dl
 
     return loss
 
@@ -221,7 +234,10 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
         images = images.clone().detach().requires_grad_(True)
         
         if attack_step == 0:
-            adv_losses = temp_criterion(model(images), target)
+            if attack_criterion == 'invarkd':
+                adv_losses = kd_attack(model_out, teacher_out, model(images), target)
+            else:
+                adv_losses = temp_criterion(model(images), target)
         else:
             if attack_criterion == 'robustkd':
                 adv_losses = robustkd_attack(model_out, teacher_out, model(images), target)
@@ -229,6 +245,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
                 adv_losses = kd_attack(model_out, teacher_out, model(images), target)
             elif attack_criterion == 'invar':
                 adv_losses = invar_attack(model_out, teacher_out, model(images), target)
+            elif attack_criterion == 'invarkd':
+                adv_losses = invar_kd_attack(model_out, teacher_out, model(images), target)
             else:
                 adv_losses = temp_criterion(model(images), target)
 

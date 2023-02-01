@@ -5,7 +5,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --teacher=clip_vit_large_patch14_224 \
 --workers=2 \
 --epochs=180 \
---batch-size=512 \
+--batch-size=64 \
 --lr=0.001 \
 --drop-path=0.25 \
 --model-ema \
@@ -15,7 +15,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --weight-decay=0.05 \
 --sched=cosine \
 --warmup-lr=1e-6 \
---warmup-epochs=1 \
+--warmup-epochs=5 \
 --cooldown-epochs=10 \
 --patience-epochs=10 \
 --color-jitter=0.4 \

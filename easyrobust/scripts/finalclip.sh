@@ -5,7 +5,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --teacher=clip_vit_large_patch14_224 \
 --workers=2 \
 --epochs=180 \
---batch-size=512 \
+--batch-size=64 \
 --lr=0.001 \
 --drop-path=0.25 \
 --model-ema \
