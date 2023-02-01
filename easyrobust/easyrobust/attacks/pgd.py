@@ -217,6 +217,9 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     best_loss = None
     best_x = None
 
+    model_out = model_out.clone().detach()
+    teacher_out = teacher_out.clone().detach()
+
     if random.random() < random_start_prob:
         images = step.random_perturb(images)
 
@@ -227,11 +230,11 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
             adv_losses = temp_criterion(model(images), target)
         else:
             if attack_criterion == 'robustkd':
-                adv_losses = robustkd_attack(model(ogimages), teacher(ogimages), model(images), target)
+                adv_losses = robustkd_attack(model_out, teacher_out, model(images), target)
             elif attack_criterion == 'kd':
-                adv_losses = kd_attack(model(ogimages), teacher(ogimages), model(images), target)
+                adv_losses = kd_attack(model_out, teacher_out, model(images), target)
             elif attack_criterion == 'invar':
-                adv_losses = invar_attack(model(ogimages), teacher(ogimages), model(images), target)
+                adv_losses = invar_attack(model_out, teacher_out, model(images), target)
             else:
                 adv_losses = temp_criterion(model(images), target)
 

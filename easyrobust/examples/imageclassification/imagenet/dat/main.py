@@ -438,6 +438,7 @@ def main():
         scriptable=args.torchscript,
         checkpoint_path=None)
     
+    print(args.teacher_path)
     teacher.load_state_dict(torch.load(args.teacher_path))
     
     for param in teacher.parameters():
@@ -701,6 +702,7 @@ def main():
     
     print("Train loss", train_loss_fn)
     print("Val loss", validate_loss_fn)
+    print("Starting training with, ", args.mode)
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
     best_metric = None
