@@ -147,13 +147,10 @@ def robustkd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
-    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
     
-    kl_div = 0.5 * temp * temp * loss_fn(soft_student_out, soft_teacher_out)
-    kl_div2 = 0.5 * temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    loss = ce_loss(y_pred_student, y_true)
+    kl_div = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+    loss = ce_loss(y_pred_aug, y_true)
     loss += kl_div
-    loss += kl_div2
     
     y = torch.ones(y_pred_teacher.shape[0]).cuda()
     dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
@@ -168,13 +165,10 @@ def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
-    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
     
-    kl_div = 0.5 * temp * temp * loss_fn(soft_student_out, soft_teacher_out)
-    kl_div2 = 0.5 * temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    loss = ce_loss(y_pred_student, y_true)
+    kl_div = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+    loss = ce_loss(y_pred_aug, y_true)
     loss += kl_div
-    loss += kl_div2
 
     return loss
 
@@ -182,7 +176,7 @@ def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     distance_loss = nn.CosineEmbeddingLoss()
     ce_loss = SoftTargetCrossEntropy()
 
-    loss = ce_loss(y_pred_student, y_true)
+    loss = ce_loss(y_pred_aug, y_true)
     
     y = torch.ones(y_pred_teacher.shape[0]).cuda()
     dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
@@ -217,8 +211,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     best_loss = None
     best_x = None
 
-    model_out = model_out.clone().detach()
     teacher_out = teacher_out.clone().detach()
+    model_out = model_out.clone().detach()
 
     if random.random() < random_start_prob:
         images = step.random_perturb(images)
