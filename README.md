@@ -27,3 +27,5 @@ KDARD: Knowledge distillation with DAT, distillation loss used to generate pertu
 ARDWD: Knowledge distillation with invariance loss. Also used to generate perturbation
 
 Final: Knowledge distillation with invariance loss. Perturbation generated with all three losses (CE, KD, Invar)
+
+RSLAD: Knowledge distillation without hard labels. Perturbation generated with KD and Invar loss. CE loss removed from objective
