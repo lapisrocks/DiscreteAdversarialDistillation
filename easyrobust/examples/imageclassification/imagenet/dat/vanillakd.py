@@ -69,24 +69,23 @@ class VanillaKD(BaseClass):
         
         #kl_div = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
         #kl_div2 = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
-
-        kl_div = 0.25 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
+        if mode == 'cos':
+            self.loss_fn = nn.CosineEmbeddingLoss()
+            y = torch.ones(y_pred_student.shape[0]).cuda()
+            dl = 10 * distance_loss(soft_student_out, soft_teacher_out, y)
+            dl2 = 10 * distance_loss(soft_student_aug_out, soft_teacher_out, y)
+            loss = dl + dl2
+            return loss
 
         if mode == 'invarkd':
-            kl_div *= 2
-
+            kl_div = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
+            kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_out)
+            loss = kl_div + kl_div2
+            return loss
+        
+        kl_div = 0.25 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
         kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_out)
-
-        if mode != 'invarkd':
-            loss = 0.25 * ce_loss(y_pred_student, y_true)
-            loss += kl_div
-        else:
-            loss = kl_div
+        loss = 0.25 * ce_loss(y_pred_student, y_true)
+        loss += kl_div
         loss += kl_div2
-        #loss += (0.25) * F.cross_entropy(y_pred_aug, y_true)
-        #loss = (kl_div)
-        #print(loss)
-        #loss += (kl_div2)
-        #loss = F.cross_entropy(y_pred_student, y_true)
-            
         return loss
