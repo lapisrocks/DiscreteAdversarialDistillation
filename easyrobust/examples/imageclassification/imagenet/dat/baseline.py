@@ -26,6 +26,7 @@ import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
+import torch.nn.functional as F
 
 from timm.data import resolve_data_config, Mixup
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
@@ -810,22 +811,6 @@ def train_one_epoch(
     for param in teacher.parameters():
         param.requires_grad = False
 
-    ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
-    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
-    vqgan_aug = vqgan_aug.cuda()
-    vqgan_aug.eval()
-
-    attack_lr = 0.1
-
-    if args.scale_attack:
-        attack_lr = 0.01
-        if epoch > 50:
-            attack_lr = 0.1
-        if epoch > 100:
-            attack_lr = 0.15
-        if epoch > 150:
-            attack_lr = 0.2
-
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
@@ -844,36 +829,16 @@ def train_one_epoch(
         with amp_autocast():
             output = model(input)
             teacher_output = teacher(input)
+            temp = 15.0
+            distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
-        with torch.no_grad():
-            xrec = reconstruct_with_vqgan(input, vqgan_aug)
+            soft_teacher_out = F.softmax(teacher_output / temp, dim=1)
+            soft_student_out = F.log_softmax(output / temp, dim=1)
+            ce_loss = SoftTargetCrossEntropy()
 
-        if args.mode == 'final':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
-        elif args.mode == 'kdard':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
-        elif args.mode == 'ardwd':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
-        elif args.mode == 'invarkd':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
-        else:
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
-
-        with torch.no_grad():
-            adv_xrec = reconstruct_with_vqgan(adv_input, vqgan_aug)
-
-        with amp_autocast():
-            output2 = model(adv_xrec)
-            
-            kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
-            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
-
-            if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
-                distance_loss = nn.CosineEmbeddingLoss()
-                
-                y = torch.ones(teacher_output.shape[0]).cuda()
-                dl = 15 * distance_loss(output2, output, y)
-                loss += dl
+            kl_div = 0.5 * temp * temp * distill_loss(soft_student_out, soft_teacher_out)
+            loss = 0.5 * ce_loss(output, target)
+            loss += kl_div
             
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
