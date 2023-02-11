@@ -197,6 +197,23 @@ def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
 
     return loss
 
+def dis_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
+    distance_loss = nn.CosineEmbeddingLoss()
+    y = torch.ones(y_pred_teacher.shape[0]).cuda()
+
+    loss = 10 * distance_loss(y_pred_aug, y_pred_teacher, y)
+    loss += (10 * distance_loss(y_pred_aug, y_pred_student, y))
+
+    return loss
+
+def dis_attack_it1(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
+    distance_loss = nn.CosineEmbeddingLoss()
+    y = torch.ones(y_pred_teacher.shape[0]).cuda()
+
+    loss = 10 * distance_loss(y_pred_aug, y_pred_teacher, y)
+
+    return loss
+
 def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_out, vqgan_aug, attack_type='Linf', eps=4/255, attack_steps=3, attack_lr=4/255*2/3, random_start_prob=0.0, targeted=False, attack_criterion='regular', use_best=True, eval_mode=True):
     # generate adversarial examples
     attack = None
@@ -236,6 +253,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
         if attack_step == 0:
             if attack_criterion == 'invarkd':
                 adv_losses = kd_attack(model_out, teacher_out, model(images), target)
+            elif attack_criterion == 'cos':
+                adv_losses = dis_attack_it1(model_out, teacher_out, model(images), target)
             else:
                 adv_losses = temp_criterion(model(images), target)
         else:
@@ -247,6 +266,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
                 adv_losses = invar_attack(model_out, teacher_out, model(images), target)
             elif attack_criterion == 'invarkd':
                 adv_losses = invar_kd_attack(model_out, teacher_out, model(images), target)
+            elif attack_criterion == 'cos':
+                adv_losses = dis_attack(model_out, teacher_out, model(images), target)
             else:
                 adv_losses = temp_criterion(model(images), target)
 

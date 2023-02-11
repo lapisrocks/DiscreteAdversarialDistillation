@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 import torch.nn.functional as F
 import math
 from timm.loss.cross_entropy import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
@@ -70,7 +71,7 @@ class VanillaKD(BaseClass):
         #kl_div = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
         #kl_div2 = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
         if mode == 'cos':
-            self.loss_fn = nn.CosineEmbeddingLoss()
+            distance_loss = nn.CosineEmbeddingLoss()
             y = torch.ones(y_pred_student.shape[0]).cuda()
             dl = 10 * distance_loss(soft_student_out, soft_teacher_out, y)
             dl2 = 10 * distance_loss(soft_student_aug_out, soft_teacher_out, y)

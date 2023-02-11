@@ -428,7 +428,7 @@ def main():
     
     teacher = create_model(
         args.teacher,
-        pretrained=args.pretrained,
+        pretrained=False,
         num_classes=args.num_classes,
         drop_rate=args.drop,
         drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
@@ -546,6 +546,8 @@ def main():
         model.load_state_dict(sd['model'])
         optimizer.load_state_dict(sd['optimizer'])
         prev_epoch += sd['epoch']
+        print("past epochs", prev_epoch)
+        args.epochs -= prev_epoch
         del sd
 
     # setup distributed training
@@ -850,6 +852,8 @@ def train_one_epoch(
 
         if args.mode == 'final':
             adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
+        elif args.mode == 'cos':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         elif args.mode == 'kdard':
             adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
         elif args.mode == 'ardwd':
