@@ -820,6 +820,17 @@ def train_one_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     teacher_on_adv = []
+    attack_lr = 0.1
+
+    if args.scale_attack:
+        attack_lr = 0.01
+        if epoch > 50:
+            attack_lr = 0.1
+        if epoch > 100:
+            attack_lr = 0.15
+        if epoch > 150:
+            attack_lr = 0.2
+            
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
