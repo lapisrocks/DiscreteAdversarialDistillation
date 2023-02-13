@@ -26,7 +26,6 @@ import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
-import torch.nn.functional as F
 
 from timm.data import resolve_data_config, Mixup
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
@@ -48,6 +47,7 @@ from easyrobust.attacks import pgd_generator
 
 from vanillakd import VanillaKD
 from os.path import exists
+from distance_loss import DIST
 
 try:
     from apex import amp
@@ -429,7 +429,7 @@ def main():
     
     teacher = create_model(
         args.teacher,
-        pretrained=args.pretrained,
+        pretrained=False,
         num_classes=args.num_classes,
         drop_rate=args.drop,
         drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
@@ -547,6 +547,8 @@ def main():
         model.load_state_dict(sd['model'])
         optimizer.load_state_dict(sd['optimizer'])
         prev_epoch += sd['epoch']
+        print("past epochs", prev_epoch)
+        args.epochs -= prev_epoch
         del sd
 
     # setup distributed training
@@ -733,52 +735,6 @@ def main():
             f.write(args_text)
 
     try:
-        for epoch in range(start_epoch, num_epochs):
-            if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
-                print("Set epoch")
-                loader_train.sampler.set_epoch(epoch)
-
-            train_metrics = train_one_epoch(
-                epoch, model, teacher, loader_train, optimizer, train_loss_fn, args,
-                lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-                amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
-
-            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
-                distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
-            
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args)
-            
-            if epoch == 0:
-                eval_metrics = validate(teacher, loader_eval, validate_loss_fn, args)
-        
-            if model_ema is not None and not args.model_ema_force_cpu:
-                if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                ema_eval_metrics = validate(
-                    model_ema.module, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
-                eval_metrics = ema_eval_metrics
-
-            if lr_scheduler is not None:
-                # step LR for next epoch
-                lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
-
-            if output_dir is not None:
-                update_summary(
-                    epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                    write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb)
-
-            if saver is not None:
-                # save proper checkpoint with eval metric
-                curr_epoch = epoch + prev_epoch
-                state = {
-                    'model': model.module.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'epoch': curr_epoch
-                }
-                torch.save(state, output_dir + '/latest.pt')
-                torch.save(state, output_dir + "/epoch" + str(epoch + prev_epoch) + ".pt")
         evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
@@ -816,6 +772,17 @@ def train_one_epoch(
     vqgan_aug = vqgan_aug.cuda()
     vqgan_aug.eval()
 
+    attack_lr = 0.1
+
+    if args.scale_attack:
+        attack_lr = 0.01
+        if epoch > 50:
+            attack_lr = 0.1
+        if epoch > 100:
+            attack_lr = 0.15
+        if epoch > 150:
+            attack_lr = 0.2
+
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
@@ -834,29 +801,43 @@ def train_one_epoch(
         with amp_autocast():
             output = model(input)
             teacher_output = teacher(input)
-            temp = 15.0
-            distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
-            soft_teacher_out = F.softmax(teacher_output / temp, dim=1)
-            soft_student_out = F.log_softmax(output / temp, dim=1)
-            ce_loss = SoftTargetCrossEntropy()
-
-            kl_div = 0.5 * temp * temp * distill_loss(soft_student_out, soft_teacher_out)
-            loss = 0.5 * ce_loss(output, target)
-            loss += kl_div
-        
         with torch.no_grad():
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
-        adv_input = pgd_generator(xrec, target, model, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
+        if args.mode == 'final':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
+        elif args.mode == 'cos':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+        elif args.mode == 'kdard':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+        elif args.mode == 'ardwd':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+        elif args.mode == 'invarkd':
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
+        else:
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
         with torch.no_grad():
             adv_xrec = reconstruct_with_vqgan(adv_input, vqgan_aug)
 
         with amp_autocast():
             output2 = model(adv_xrec)
-            loss += 0.5 * loss_fn(output2, target)
+            
+            if args.mode == 'cos':
+                kd_loss_fn = DIST()
+                loss = kd_loss_fn(output, teacher_output, output2, target)
+            else:
+                kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
+                loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
 
+            if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
+                distance_loss = nn.CosineEmbeddingLoss()
+                
+                y = torch.ones(teacher_output.shape[0]).cuda()
+                dl = 15 * distance_loss(output2, output, y)
+                loss += dl
+            
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
 
