@@ -848,7 +848,7 @@ def train_one_epoch(
         with torch.no_grad():
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
-        adv_input = pgd_generator(xrec, target, model, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=0.1, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
+        adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
         with torch.no_grad():
             adv_xrec = reconstruct_with_vqgan(adv_input, vqgan_aug)
