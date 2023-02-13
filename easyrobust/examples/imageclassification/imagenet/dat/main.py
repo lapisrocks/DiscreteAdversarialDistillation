@@ -47,6 +47,7 @@ from easyrobust.attacks import pgd_generator
 
 from vanillakd import VanillaKD
 from os.path import exists
+from distance_loss import DIST
 
 try:
     from apex import amp
@@ -853,7 +854,7 @@ def train_one_epoch(
         if args.mode == 'final':
             adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
         elif args.mode == 'cos':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
+            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
         elif args.mode == 'kdard':
             adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
         elif args.mode == 'ardwd':
@@ -869,8 +870,12 @@ def train_one_epoch(
         with amp_autocast():
             output2 = model(adv_xrec)
             
-            kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
-            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
+            if args.mode == 'cos':
+                kd_loss_fn = DIST()
+                loss = kd_loss_fn(output, teacher_output, output2, target)
+            else:
+                kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
+                loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
 
             if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
                 distance_loss = nn.CosineEmbeddingLoss()
