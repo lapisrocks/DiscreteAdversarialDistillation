@@ -6,6 +6,9 @@
 $ git clone https://github.com/andyz245/RobustKD.git
 $ cd easyrobust
 $ pip install -e .
+$ pip install PyWavelets
+$ pip install matplotlib
+$ pip install tensorboard 
 ```
 
 ### Evaluation Data and Models
