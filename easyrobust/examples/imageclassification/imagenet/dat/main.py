@@ -47,7 +47,7 @@ from easyrobust.attacks import pgd_generator
 
 from vanillakd import VanillaKD
 from os.path import exists
-from distance_loss import DIST
+from distance_loss import *
 
 try:
     from apex import amp
@@ -852,36 +852,34 @@ def train_one_epoch(
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
         if args.mode == 'final':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
         elif args.mode == 'cos':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         elif args.mode == 'kdard':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
         elif args.mode == 'ardwd':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
         elif args.mode == 'invarkd':
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
         else:
-            adv_input = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
-
-        with torch.no_grad():
-            adv_xrec = reconstruct_with_vqgan(adv_input, vqgan_aug)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
         with amp_autocast():
             output2 = model(adv_xrec)
+            teacher_output2 = teacher(adv_xrec)
             
             if args.mode == 'cos':
                 kd_loss_fn = DIST()
-                loss = kd_loss_fn(output, teacher_output, output2, target)
+                loss = kd_loss_fn(output, teacher_output, teacher_output2, output2, target)
             else:
                 kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
-                loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, output2, target, args.mode)
+                loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)
 
             if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
                 distance_loss = nn.CosineEmbeddingLoss()
                 
-                y = torch.ones(teacher_output.shape[0]).cuda()
-                dl = 15 * distance_loss(output2, output, y)
+                y = torch.ones(output.shape[0]).cuda()
+                dl = 10 * distance_loss(output2, output, y)
                 loss += dl
             
         if not args.distributed:

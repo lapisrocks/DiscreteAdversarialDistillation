@@ -54,7 +54,7 @@ class VanillaKD(BaseClass):
             logdir,
         )
 
-    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_aug, y_true, mode):
+    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_teacher_aug, y_pred_aug, y_true, mode):
         """
         Function used for calculating the KD loss during distillation
         :param y_pred_student (torch.FloatTensor): Prediction made by the student model
@@ -63,6 +63,7 @@ class VanillaKD(BaseClass):
         """
 
         soft_teacher_out = F.softmax(y_pred_teacher / self.temp, dim=1)
+        soft_teacher_aug_out = F.softmax(y_pred_teacher_aug / self.temp, dim=1)
         soft_student_aug_out = F.log_softmax(y_pred_aug / self.temp, dim=1)
         soft_student_out = F.log_softmax(y_pred_student / self.temp, dim=1)
         ce_loss = SoftTargetCrossEntropy()
@@ -70,22 +71,15 @@ class VanillaKD(BaseClass):
         
         #kl_div = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
         #kl_div2 = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
-        if mode == 'cos':
-            distance_loss = nn.CosineEmbeddingLoss()
-            y = torch.ones(y_pred_student.shape[0]).cuda()
-            dl = 10 * distance_loss(soft_student_out, soft_teacher_out, y)
-            dl2 = 10 * distance_loss(soft_student_aug_out, soft_teacher_out, y)
-            loss = dl + dl2
-            return loss
 
         if mode == 'invarkd':
             kl_div = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
-            kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_out)
+            kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_aug_out)
             loss = kl_div + kl_div2
             return loss
         
         kl_div = 0.25 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
-        kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_out)
+        kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_aug_out)
         loss = 0.25 * ce_loss(y_pred_student, y_true)
         loss += kl_div
         loss += kl_div2

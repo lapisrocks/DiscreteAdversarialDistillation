@@ -28,17 +28,16 @@ class DIST(nn.Module):
         self.alpha = alpha
         self.delta = delta
 
-    def forward(self, z_s, z_t, z_ta, z_a, target):
+    def forward(self, z_s, z_t, z_a, target):
         ce_loss = SoftTargetCrossEntropy()
 
         y_s = (z_s / self.tau).softmax(dim=1)
         y_t = (z_t / self.tau).softmax(dim=1)
         y_a = (z_a / self.tau).softmax(dim=1)
-        y_ta = (z_ta / self.tau).softmax(dim=1)
         inter_loss = self.tau**2 * inter_class_relation(y_s, y_t)
         intra_loss = self.tau**2 * intra_class_relation(y_s, y_t)
-        inter_loss_a = self.tau**2 * inter_class_relation(y_a, y_ta)
-        intra_loss_a = self.tau**2 * intra_class_relation(y_a, y_ta)
+        inter_loss_a = self.tau**2 * inter_class_relation(y_a, y_t)
+        intra_loss_a = self.tau**2 * intra_class_relation(y_a, y_t)
 
         kd_loss = self.alpha * (self.beta * inter_loss + self.gamma * intra_loss)
         kd_loss += (1-self.alpha) * (self.beta * inter_loss_a + self.gamma * intra_loss_a)

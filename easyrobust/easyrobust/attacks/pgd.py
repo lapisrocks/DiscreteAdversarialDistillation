@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from timm.loss.cross_entropy import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from easyrobust.third_party.vqgan import VQModel, reconstruct_with_vqgan
+from distance_attack import *
 
 import torch.nn.functional as F
 
@@ -198,21 +199,25 @@ def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     return loss
 
 def dis_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
+    ce_loss = SoftTargetCrossEntropy()
     distance_loss = nn.CosineEmbeddingLoss()
     y = torch.ones(y_pred_teacher.shape[0]).cuda()
+    beta=2.0
+    gamma=2.0
+    tau=4.0
+    delta=1.0
 
-    loss = 10 * distance_loss(y_pred_aug, y_pred_teacher, y)
-    loss += (10 * distance_loss(y_pred_aug, y_pred_student, y))
+    y_t = (y_pred_teacher / tau).softmax(dim=1)
+    y_a = (y_pred_aug / tau).softmax(dim=1)
 
-    return loss
+    inter_loss = tau**2 * inter_class_relation(y_a, y_t)
+    intra_loss = tau**2 * intra_class_relation(y_a, y_t)
 
-def dis_attack_it1(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    distance_loss = nn.CosineEmbeddingLoss()
-    y = torch.ones(y_pred_teacher.shape[0]).cuda()
+    dist_loss = 10.0 * distance_loss(y_pred_aug, y_pred_student, y)
+    kd_loss = beta * inter_loss + gamma * intra_loss
+    class_loss = ce_loss(y_a, y_true)
 
-    loss = 10 * distance_loss(y_pred_aug, y_pred_teacher, y)
-
-    return loss
+    return kd_loss + class_loss + dist_loss
 
 def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_out, vqgan_aug, attack_type='Linf', eps=4/255, attack_steps=3, attack_lr=4/255*2/3, random_start_prob=0.0, targeted=False, attack_criterion='regular', use_best=True, eval_mode=True):
     # generate adversarial examples
@@ -241,45 +246,44 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     best_loss = None
     best_x = None
 
-    teacher_out = teacher_out.clone().detach()
-    model_out = model_out.clone().detach()
+    y_t = teacher_out.clone().detach()
+    y_s = model_out.clone().detach()
 
     if random.random() < random_start_prob:
         images = step.random_perturb(images)
 
+    prev_images = images.clone().detach()
+
     for attack_step in range(attack_steps):
         images = images.clone().detach().requires_grad_(True)
         
-        if attack_step == 0:
-            if attack_criterion == 'invarkd':
-                adv_losses = kd_attack(model_out, teacher_out, model(images), target)
-            elif attack_criterion == 'cos':
-                adv_losses = dis_attack_it1(model_out, teacher_out, model(images), target)
-            else:
-                adv_losses = temp_criterion(model(images), target)
+        if attack_criterion == 'robustkd':
+            adv_losses = robustkd_attack(y_s, y_t, model(images), target)
+        elif attack_criterion == 'kd':
+            adv_losses = kd_attack(y_s, y_t, model(images), target)
+        elif attack_criterion == 'invar':
+            adv_losses = invar_attack(y_s, y_t, model(images), target)
+        elif attack_criterion == 'invarkd':
+            adv_losses = invar_kd_attack(y_s, y_t, model(images), target)
+        elif attack_criterion == 'cos':
+            adv_losses = dis_attack(y_s, y_t, model(images), target)
         else:
-            if attack_criterion == 'robustkd':
-                adv_losses = robustkd_attack(model_out, teacher_out, model(images), target)
-            elif attack_criterion == 'kd':
-                adv_losses = kd_attack(model_out, teacher_out, model(images), target)
-            elif attack_criterion == 'invar':
-                adv_losses = invar_attack(model_out, teacher_out, model(images), target)
-            elif attack_criterion == 'invarkd':
-                adv_losses = invar_kd_attack(model_out, teacher_out, model(images), target)
-            elif attack_criterion == 'cos':
-                adv_losses = dis_attack(model_out, teacher_out, model(images), target)
-            else:
-                adv_losses = temp_criterion(model(images), target)
+            adv_losses = temp_criterion(model(images), target)
 
         torch.mean(m * adv_losses).backward()
         grad = images.grad.detach()
 
         with torch.no_grad():
-            varlist = [adv_losses, best_loss, images, best_x, m]
-            best_loss, best_x = replace_best(*varlist) if use_best else (adv_losses, images)
-
             images = step.step(images, grad)
             images = step.project(images)
+            images = reconstruct_with_vqgan(images, vqgan_aug)
+
+            pred = torch.argmax(teacher(images), dim=1)
+            if pred != target:
+                images = prev_images
+                break
+            else:
+                prev_images = images.clone()
 
     if prev_training:
         model.train()
