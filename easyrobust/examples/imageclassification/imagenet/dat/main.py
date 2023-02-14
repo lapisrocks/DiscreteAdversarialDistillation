@@ -874,13 +874,6 @@ def train_one_epoch(
             else:
                 kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
                 loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)
-
-            if args.mode == 'final' or args.mode == 'ardwd' or args.mode == 'invarkd' or args.mode == 'cos':
-                distance_loss = nn.CosineEmbeddingLoss()
-                
-                y = torch.ones(output.shape[0]).cuda()
-                dl = 10 * distance_loss(output2, output, y)
-                loss += dl
             
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))

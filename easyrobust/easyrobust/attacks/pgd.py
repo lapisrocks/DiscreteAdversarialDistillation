@@ -141,27 +141,23 @@ def replace_best(loss, bloss, x, bx, m):
     return bloss, bx
 
 def robustkd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    distance_loss = nn.CosineEmbeddingLoss()
-    ce_loss = SoftTargetCrossEntropy()
     loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    temp = 15.0
+    ce_loss = SoftTargetCrossEntropy()
+    temp = 4.0
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
+    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
     
-    kl_div = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    loss = ce_loss(y_pred_aug, y_true)
-    loss += kl_div
-    
-    y = torch.ones(y_pred_teacher.shape[0]).cuda()
-    dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
-    loss += dl
+    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+    dl = temp * temp * loss_fn(soft_student_aug_out, soft_student_out)
+    class_loss = ce_loss(y_pred_aug, y_true)
 
-    return loss
+    return loss + dl + class_loss
 
 def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    temp = 15.0
+    temp = 4.0
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
@@ -171,51 +167,54 @@ def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     return loss
 
 def invar_kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    distance_loss = nn.CosineEmbeddingLoss()
     loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    temp = 15.0
+    temp = 4.0
         
     soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
     soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
+    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
     
     loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
+    dl = temp * temp * loss_fn(soft_student_aug_out, soft_student_out)
 
-    y = torch.ones(y_pred_teacher.shape[0]).cuda()
-    dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
     loss += dl
 
     return loss
 
 def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    distance_loss = nn.CosineEmbeddingLoss()
+    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
+    tau=4.0
     ce_loss = SoftTargetCrossEntropy()
 
+    y_s = (y_pred_student / tau).log_softmax(dim=1)
+    y_al = (y_pred_aug / tau).log_softmax(dim=1)
+
     loss = ce_loss(y_pred_aug, y_true)
+    dist_loss = tau**2 * distance_loss(y_al, y_s)
     
-    y = torch.ones(y_pred_teacher.shape[0]).cuda()
-    dl = 10 * distance_loss(y_pred_aug, y_pred_student, y)
-    loss += dl
+    loss += dist_loss
 
     return loss
 
 def dis_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     ce_loss = SoftTargetCrossEntropy()
-    distance_loss = nn.CosineEmbeddingLoss()
-    y = torch.ones(y_pred_teacher.shape[0]).cuda()
+    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
     beta=2.0
     gamma=2.0
     tau=4.0
     delta=1.0
 
     y_t = (y_pred_teacher / tau).softmax(dim=1)
+    y_s = (y_pred_student / tau).log_softmax(dim=1)
     y_a = (y_pred_aug / tau).softmax(dim=1)
+    y_al = (y_pred_aug / tau).log_softmax(dim=1)
 
     inter_loss = tau**2 * inter_class_relation(y_a, y_t)
     intra_loss = tau**2 * intra_class_relation(y_a, y_t)
 
-    dist_loss = 10.0 * distance_loss(y_pred_aug, y_pred_student, y)
+    dist_loss = tau**2 * distance_loss(y_al, y_s)
     kd_loss = beta * inter_loss + gamma * intra_loss
-    class_loss = ce_loss(y_a, y_true)
+    class_loss = ce_loss(y_pred_aug, y_true)
 
     return kd_loss + class_loss + dist_loss
 
