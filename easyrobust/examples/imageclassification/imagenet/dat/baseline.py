@@ -48,7 +48,7 @@ from easyrobust.attacks import pgd_generator
 
 from vanillakd import VanillaKD
 from os.path import exists
-from distance_loss import *
+from baseline_dist import *
 
 try:
     from apex import amp
