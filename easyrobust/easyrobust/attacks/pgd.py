@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 from timm.loss.cross_entropy import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from easyrobust.third_party.vqgan import VQModel, reconstruct_with_vqgan
-from distance_attack import *
 
 import torch.nn.functional as F
 
@@ -139,6 +138,21 @@ def replace_best(loss, bloss, x, bx, m):
         bloss[replace] = loss[replace]
 
     return bloss, bx
+
+def cosine_similarity(a, b, eps=1e-8):
+    return (a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1) + eps)
+
+
+def pearson_correlation(a, b, eps=1e-8):
+    return cosine_similarity(a - a.mean(1).unsqueeze(1),
+                             b - b.mean(1).unsqueeze(1), eps)
+
+
+def inter_class_relation(y_s, y_t):
+    return 1 - pearson_correlation(y_s, y_t).mean()
+
+def intra_class_relation(y_s, y_t):
+    return inter_class_relation(y_s.transpose(0, 1), y_t.transpose(0, 1))
 
 def robustkd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
@@ -277,8 +291,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
             images = step.project(images)
             images = reconstruct_with_vqgan(images, vqgan_aug)
 
-            pred = torch.argmax(teacher(images), dim=1)
-            if pred != target:
+            pred = (torch.argmax(teacher(images), 1) == target.transpose)
+            if pred:
                 images = prev_images
                 break
             else:

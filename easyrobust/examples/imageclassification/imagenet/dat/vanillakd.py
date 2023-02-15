@@ -85,7 +85,7 @@ class VanillaKD(BaseClass):
         loss += kl_div
         loss += kl_div2
 
-        if mode == 'final' mode == 'ardwd':
+        if mode == 'final' or mode == 'ardwd':
             dl = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_student_out)
             loss += dl
 

@@ -1,11 +1,11 @@
 python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassification/imagenet/dat/main.py \
 --data_dir=/mnt/mydata/dataset/imagenet/imagenet/raw-data \
 --test_data=/mnt/default/projects/robustkd/evaluation \
---model=vit_base_patch16_224 \
+--model=resnet34 \
 --teacher=clip_vit_large_patch14_224 \
---workers=2 \
+--workers=32 \
 --epochs=180 \
---batch-size=64 \
+--batch-size=128 \
 --lr=0.001 \
 --drop-path=0.25 \
 --model-ema \
@@ -32,4 +32,4 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --teacher_path=/mnt/default/projects/robustkd/amlt-code/dc8ac100-34d6-475a-a2f3-fb8eded82a79/examples/imageclassification/imagenet/dat/FTCLIP.pt \
 --mode=final \
 --output=/mnt/default/projects/robustkd/experiments/clip \
---experiment=final
+--experiment=finalresnet34

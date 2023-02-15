@@ -41,9 +41,9 @@ class DIST(nn.Module):
         intra_loss = self.tau**2 * intra_class_relation(y_s, y_t)
         inter_loss_a = self.tau**2 * inter_class_relation(y_a, y_ta)
         intra_loss_a = self.tau**2 * intra_class_relation(y_a, y_ta)
-        
+
         distance_loss = self.alpha * (self.tau**2 * kl_div(y_al, y_s))
         kd_loss = self.alpha * (self.beta * inter_loss + self.gamma * intra_loss)
         kd_loss += self.alpha * (self.beta * inter_loss_a + self.gamma * intra_loss_a)
-        class_loss = ce_loss(y_s, target)
+        class_loss = ce_loss(z_s, target)
         return kd_loss + (self.delta * class_loss) + distance_loss
