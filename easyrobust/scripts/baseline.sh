@@ -1,11 +1,11 @@
 python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassification/imagenet/dat/baseline.py \
 --data_dir=/mnt/mydata/dataset/imagenet/imagenet/raw-data \
 --test_data=/mnt/default/projects/robustkd/evaluation \
---model=vit_base_patch16_224 \
+--model=vit_small_patch16_224 \
 --teacher=clip_vit_large_patch14_224 \
---workers=2 \
+--workers=16 \
 --epochs=180 \
---batch-size=64 \
+--batch-size=256 \
 --lr=0.001 \
 --drop-path=0.25 \
 --model-ema \

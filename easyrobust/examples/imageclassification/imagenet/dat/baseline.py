@@ -48,6 +48,7 @@ from easyrobust.attacks import pgd_generator
 
 from vanillakd import VanillaKD
 from os.path import exists
+from distance_loss import *
 
 try:
     from apex import amp
@@ -830,7 +831,7 @@ def train_one_epoch(
             attack_lr = 0.15
         if epoch > 150:
             attack_lr = 0.2
-            
+
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
@@ -845,16 +846,21 @@ def train_one_epoch(
         with amp_autocast():
             output = model(input)
             teacher_output = teacher(input)
-            temp = 15.0
-            distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
-            soft_teacher_out = F.softmax(teacher_output / temp, dim=1)
-            soft_student_out = F.log_softmax(output / temp, dim=1)
-            ce_loss = SoftTargetCrossEntropy()
+            if args.mode == 'cos':
+                kd_loss_fn = DIST()
+                loss = kd_loss_fn(output, teacher_output, target)
+            else:
+                temp = 4.0
+                distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
-            kl_div = 0.5 * temp * temp * distill_loss(soft_student_out, soft_teacher_out)
-            loss = 0.5 * ce_loss(output, target)
-            loss += kl_div
+                soft_teacher_out = F.softmax(teacher_output / temp, dim=1)
+                soft_student_out = F.log_softmax(output / temp, dim=1)
+                ce_loss = SoftTargetCrossEntropy()
+
+                kl_div = 0.5 * temp * temp * distill_loss(soft_student_out, soft_teacher_out)
+                loss = 0.5 * ce_loss(output, target)
+                loss += kl_div
         
         with torch.no_grad():
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
