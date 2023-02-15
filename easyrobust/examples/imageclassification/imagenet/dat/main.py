@@ -852,15 +852,15 @@ def train_one_epoch(
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
         if args.mode == 'final':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='robustkd', eval_mode=False)
         elif args.mode == 'cos':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=5, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         elif args.mode == 'kdard':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
         elif args.mode == 'ardwd':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
         elif args.mode == 'invarkd':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=2, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
         else:
             adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
