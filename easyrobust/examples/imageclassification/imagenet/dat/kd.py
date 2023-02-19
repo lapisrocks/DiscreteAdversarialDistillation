@@ -846,7 +846,7 @@ def train_one_epoch(
                 kd_loss_fn = DIST()
                 loss = kd_loss_fn(output, teacher_output, target)
             else:
-                temp = 4.0
+                temp = 1.0
                 distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
                 soft_teacher_out = F.softmax(teacher_output / temp, dim=1)

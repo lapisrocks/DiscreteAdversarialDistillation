@@ -16,6 +16,7 @@ import torch
 from torch.utils import model_zoo
 import torch.nn as nn
 from einops import rearrange
+import pytorch_lightning
 
 class VectorQuantizer(nn.Module):
     """
@@ -529,6 +530,7 @@ class VQModel(nn.Module):
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = model_zoo.load_url(path, map_location="cpu")["state_dict"]
+        #sd = torch.load(path, map_location="cpu")["state_dict"]
         keys = list(sd.keys())
         for k in keys:
             for ik in ignore_keys:

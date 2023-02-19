@@ -20,7 +20,7 @@ def intra_class_relation(y_s, y_t):
 
 
 class DIST(nn.Module):
-    def __init__(self, beta=2.0, gamma=2.0, tau=4.0, alpha=0.5, delta=1.0):
+    def __init__(self, beta=1.0, gamma=1.0, tau=1.0, alpha=0.5, delta=1.0):
         super(DIST, self).__init__()
         self.beta = beta
         self.gamma = gamma
@@ -42,7 +42,7 @@ class DIST(nn.Module):
         inter_loss_a = self.tau**2 * inter_class_relation(y_a, y_ta)
         intra_loss_a = self.tau**2 * intra_class_relation(y_a, y_ta)
 
-        distance_loss = self.alpha * (self.tau**2 * kl_div(y_al, y_s))
+        distance_loss = self.tau**2 * kl_div(y_al, y_s)
         kd_loss = self.alpha * (self.beta * inter_loss + self.gamma * intra_loss)
         kd_loss += self.alpha * (self.beta * inter_loss_a + self.gamma * intra_loss_a)
         class_loss = ce_loss(z_s, target)

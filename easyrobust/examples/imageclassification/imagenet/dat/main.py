@@ -476,7 +476,7 @@ def main():
     # optionally resume from a checkpoint
     resume_epoch = None
     if args.resume != '':
-        sd = torch.load(args.resume, map_location="cuda")
+        sd = torch.load(args.resume, map_location="cpu")
     
         for key in list(sd):
             newKeyName = key[7:]

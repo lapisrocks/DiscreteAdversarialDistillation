@@ -18,6 +18,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --warmup-epochs=5 \
 --cooldown-epochs=10 \
 --patience-epochs=10 \
+--smoothing=0.1 \
 --pin-mem \
 --clip-grad=0.9 \
 --mean 0.0 0.0 0.0 \
