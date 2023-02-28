@@ -814,7 +814,7 @@ def train_one_epoch(
         param.requires_grad = False
 
     ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
-    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
+    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='/mnt/default/projects/robustkd/amlt-code/331343d9-f211-471c-b76b-593f941d020b/examples/imageclassification/imagenet/dat/model.ckpt')
     vqgan_aug = vqgan_aug.cuda()
     vqgan_aug.eval()
 
@@ -856,11 +856,11 @@ def train_one_epoch(
         elif args.mode == 'cos':
             adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         elif args.mode == 'kdard':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         elif args.mode == 'ardwd':
             adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invar', eval_mode=False)
         elif args.mode == 'invarkd':
-            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='invarkd', eval_mode=False)
+            adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=10, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='cos', eval_mode=False)
         else:
             adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='mixup', eval_mode=False)
 
@@ -870,7 +870,17 @@ def train_one_epoch(
             
             if args.mode == 'cos':
                 kd_loss_fn = DIST()
-                loss = kd_loss_fn(output, teacher_output, teacher_output2, output2, target)
+                losses = kd_loss_fn(output, teacher_output, teacher_output2, output2, target)
+                if batch_idx == 0:
+                    _logger.info('KD Loss Norm: {0}, KD Loss Aug: {1}, Class Loss: {2}, Invar Loss: {3}'.format(losses[0].item(), losses[1].item(), losses[2].item(), losses[3].item()))
+                loss = sum(losses)
+            elif args.mode == 'kdard':
+                kd_loss_fn = DIST()
+                losses = kd_loss_fn(output, teacher_output, teacher_output2, output2, target)
+                if batch_idx == 0:
+                    _logger.info('KD Loss Norm: {0}, KD Loss Aug: {1}, Class Loss: {2}, Invar Loss: {3}'.format(losses[0].item(), losses[1].item(), losses[2].item(), losses[3].item()))
+                del losses[3]
+                loss = sum(losses)
             else:
                 kd_loss_fn = VanillaKD(teacher, model, loader, None, None, optimizer)
                 loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)

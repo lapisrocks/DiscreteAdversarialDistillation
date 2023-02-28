@@ -1,10 +1,10 @@
-python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassification/imagenet/dat/main.py \
+python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassification/imagenet/dat/baseline.py \
 --data_dir=/mnt/mydata/dataset/imagenet/imagenet/raw-data \
 --test_data=/mnt/default/projects/robustkd/evaluation \
---model=vit_base_patch16_224 \
+--model=vit_small_patch16_224 \
 --teacher=clip_vit_large_patch14_224 \
 --workers=2 \
---epochs=180 \
+--epochs=290 \
 --batch-size=64 \
 --lr=0.001 \
 --drop-path=0.25 \
@@ -15,7 +15,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --weight-decay=0.05 \
 --sched=cosine \
 --warmup-lr=1e-6 \
---warmup-epochs=0 \
+--warmup-epochs=5 \
 --cooldown-epochs=10 \
 --patience-epochs=10 \
 --color-jitter=0.4 \
@@ -29,8 +29,7 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --mean 0.0 0.0 0.0 \
 --std 1.0 1.0 1.0 \
 --distill_from_teacher=True \
---scale_attack=False \
 --teacher_path=/mnt/default/projects/robustkd/amlt-code/dc8ac100-34d6-475a-a2f3-fb8eded82a79/examples/imageclassification/imagenet/dat/FTCLIP.pt \
---mode=invarkd \
---output=/mnt/default/projects/robustkd/experiments/clip \
---experiment=rsladvit
+--mode=ard \
+--output=/mnt/default/projects/robustkd/experiments/main \
+--experiment=baselinekddatvits

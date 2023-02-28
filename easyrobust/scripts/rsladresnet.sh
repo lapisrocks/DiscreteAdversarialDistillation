@@ -32,5 +32,5 @@ python -m torch.distributed.launch --nproc_per_node=8 examples/imageclassificati
 --scale_attack=False \
 --teacher_path=/mnt/default/projects/robustkd/amlt-code/dc8ac100-34d6-475a-a2f3-fb8eded82a79/examples/imageclassification/imagenet/dat/FTCLIP.pt \
 --mode=invarkd \
---output=/mnt/default/projects/robustkd/experiments/clip \
---experiment=rsladresnet
+--output=/mnt/default/projects/robustkd/experiments/clipresnet \
+--experiment=rslad

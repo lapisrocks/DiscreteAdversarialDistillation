@@ -29,6 +29,7 @@ class DIST(nn.Module):
         self.delta = delta
 
     def forward(self, z_s, z_t, z_ta, z_a, target):
+        losses = []
         ce_loss = SoftTargetCrossEntropy()
         kl_div = nn.KLDivLoss(reduction="batchmean", log_target=False)
 
@@ -43,7 +44,12 @@ class DIST(nn.Module):
         intra_loss_a = self.tau**2 * intra_class_relation(y_a, y_ta)
 
         distance_loss = self.tau**2 * kl_div(y_al, y_s)
-        kd_loss = self.alpha * (self.beta * inter_loss + self.gamma * intra_loss)
-        kd_loss += self.alpha * (self.beta * inter_loss_a + self.gamma * intra_loss_a)
+        kd_loss1 = self.alpha * (self.beta * inter_loss + self.gamma * intra_loss)
+        kd_loss2 = self.alpha * (self.beta * inter_loss_a + self.gamma * intra_loss_a)
         class_loss = ce_loss(z_s, target)
-        return kd_loss + (self.delta * class_loss) + distance_loss
+
+        losses.append(kd_loss1)
+        losses.append(kd_loss2)
+        losses.append(class_loss)
+        losses.append(distance_loss)
+        return losses

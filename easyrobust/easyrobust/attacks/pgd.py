@@ -181,19 +181,26 @@ def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     return loss
 
 def invar_kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    temp = 4.0
-        
-    soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
-    soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
-    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
-    
-    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    dl = temp * temp * loss_fn(soft_student_aug_out, soft_student_out)
+    ce_loss = SoftTargetCrossEntropy()
+    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
+    beta=1.0
+    gamma=1.0
+    tau=1.0
+    delta=1.0
 
-    loss += dl
+    y_t = (y_pred_teacher / tau).softmax(dim=1)
+    y_s = (y_pred_student / tau).log_softmax(dim=1)
+    y_a = (y_pred_aug / tau).softmax(dim=1)
+    y_al = (y_pred_aug / tau).log_softmax(dim=1)
+ 
+    inter_loss = tau**2 * inter_class_relation(y_a, y_t)
+    intra_loss = tau**2 * intra_class_relation(y_a, y_t)
 
-    return loss
+    dist_loss = gamma * beta * tau**2 * distance_loss(y_al, y_s)
+    kd_loss = beta * inter_loss + gamma * intra_loss
+    class_loss = ce_loss(y_pred_aug, y_true)
+
+    return kd_loss + dist_loss + class_loss
 
 def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
@@ -230,7 +237,7 @@ def dis_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
     kd_loss = beta * inter_loss + gamma * intra_loss
     class_loss = ce_loss(y_pred_aug, y_true)
 
-    return kd_loss + dist_loss + class_loss
+    return kd_loss
 
 def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_out, vqgan_aug, attack_type='Linf', eps=4/255, attack_steps=3, attack_lr=4/255*2/3, random_start_prob=0.0, targeted=False, attack_criterion='regular', use_best=True, eval_mode=True):
     # generate adversarial examples

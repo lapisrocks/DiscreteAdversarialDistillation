@@ -1,2 +1,3 @@
 examples/imageclassification/imagenet/dat/FTCLIP.pt
 examples/imageclassification/imagenet/dat/latest.pt
+examples/imageclassification/imagenet/dat/model.ckpt

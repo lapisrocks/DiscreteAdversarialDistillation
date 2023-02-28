@@ -813,8 +813,10 @@ def train_one_epoch(
         param.requires_grad = False
 
     ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
-    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='/mnt/default/projects/robustkd/amlt-code/331343d9-f211-471c-b76b-593f941d020b/examples/imageclassification/imagenet/dat/model.ckpt')
+    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
     vqgan_aug = vqgan_aug.cuda()
+    
+    #/mnt/default/projects/robustkd/amlt-code/331343d9-f211-471c-b76b-593f941d020b/examples/imageclassification/imagenet/dat/model.ckpt
     vqgan_aug.eval()
 
     end = time.time()
