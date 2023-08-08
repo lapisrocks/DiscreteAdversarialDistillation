@@ -139,105 +139,11 @@ def replace_best(loss, bloss, x, bx, m):
 
     return bloss, bx
 
-def cosine_similarity(a, b, eps=1e-8):
-    return (a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1) + eps)
-
-
-def pearson_correlation(a, b, eps=1e-8):
-    return cosine_similarity(a - a.mean(1).unsqueeze(1),
-                             b - b.mean(1).unsqueeze(1), eps)
-
-
-def inter_class_relation(y_s, y_t):
-    return 1 - pearson_correlation(y_s, y_t).mean()
-
-def intra_class_relation(y_s, y_t):
-    return inter_class_relation(y_s.transpose(0, 1), y_t.transpose(0, 1))
-
-def robustkd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    ce_loss = SoftTargetCrossEntropy()
+def kd_attack(y_pred_teacher, y_true):
     temp = 4.0
-        
-    soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
-    soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
-    soft_student_out = F.log_softmax(y_pred_student / temp, dim=1)
-    
-    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-    dl = temp * temp * loss_fn(soft_student_aug_out, soft_student_out)
-    class_loss = ce_loss(y_pred_aug, y_true)
-
-    return loss + dl + class_loss
-
-def kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    loss_fn=nn.KLDivLoss(reduction="batchmean", log_target=True)
-    temp = 4.0
-        
-    soft_teacher_out = F.log_softmax(y_pred_teacher / temp, dim=1)
-    soft_student_aug_out = F.log_softmax(y_pred_aug / temp, dim=1)
-    
-    loss = temp * temp * loss_fn(soft_student_aug_out, soft_teacher_out)
-
+    ce_loss = SoftTargetCrossEntropy()
+    loss = ce_loss(y_pred_teacher, y_true)
     return loss
-
-def invar_kd_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    ce_loss = SoftTargetCrossEntropy()
-    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
-    beta=1.0
-    gamma=1.0
-    tau=1.0
-    delta=1.0
-
-    y_t = (y_pred_teacher / tau).softmax(dim=1)
-    y_s = (y_pred_student / tau).log_softmax(dim=1)
-    y_a = (y_pred_aug / tau).softmax(dim=1)
-    y_al = (y_pred_aug / tau).log_softmax(dim=1)
- 
-    inter_loss = tau**2 * inter_class_relation(y_a, y_t)
-    intra_loss = tau**2 * intra_class_relation(y_a, y_t)
-
-    dist_loss = gamma * beta * tau**2 * distance_loss(y_al, y_s)
-    kd_loss = beta * inter_loss + gamma * intra_loss
-    class_loss = ce_loss(y_pred_aug, y_true)
-
-    return kd_loss + dist_loss + class_loss
-
-def invar_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
-    tau=4.0
-    ce_loss = SoftTargetCrossEntropy()
-
-    y_s = (y_pred_student / tau).log_softmax(dim=1)
-    y_al = (y_pred_aug / tau).log_softmax(dim=1)
-
-    loss = ce_loss(y_pred_aug, y_true)
-    dist_loss = tau**2 * distance_loss(y_al, y_s)
-    
-    loss += dist_loss
-
-    return loss
-
-def dis_attack(y_pred_student, y_pred_teacher, y_pred_aug, y_true):
-    ce_loss = SoftTargetCrossEntropy()
-    distance_loss = nn.KLDivLoss(reduction="batchmean", log_target=True)
-    beta=1.0
-    gamma=1.0
-    tau=1.0
-    delta=1.0
-
-    y_t = (y_pred_teacher / tau).softmax(dim=1)
-    y_s = (y_pred_student / tau).log_softmax(dim=1)
-    y_a = (y_pred_aug / tau).softmax(dim=1)
-    y_al = (y_pred_aug / tau).log_softmax(dim=1)
- 
-    inter_loss = tau**2 * inter_class_relation(y_a, y_t)
-    intra_loss = tau**2 * intra_class_relation(y_a, y_t)
-
-    dist_loss = gamma * beta * tau**2 * distance_loss(y_al, y_s)
-    kd_loss = beta * inter_loss + gamma * intra_loss
-    class_loss = ce_loss(y_pred_aug, y_true)
-
-    return kd_loss
 
 def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_out, vqgan_aug, attack_type='Linf', eps=4/255, attack_steps=3, attack_lr=4/255*2/3, random_start_prob=0.0, targeted=False, attack_criterion='regular', use_best=True, eval_mode=True):
     # generate adversarial examples
@@ -266,8 +172,8 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     best_loss = None
     best_x = None
 
-    y_t = teacher_out.clone().detach()
-    y_s = model_out.clone().detach()
+    y_t = None
+    y_s = None
 
     if random.random() < random_start_prob:
         images = step.random_perturb(images)
@@ -277,18 +183,7 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
     for attack_step in range(attack_steps):
         images = images.clone().detach().requires_grad_(True)
         
-        if attack_criterion == 'robustkd':
-            adv_losses = robustkd_attack(y_s, y_t, model(images), target)
-        elif attack_criterion == 'kd':
-            adv_losses = kd_attack(y_s, y_t, model(images), target)
-        elif attack_criterion == 'invar':
-            adv_losses = invar_attack(y_s, y_t, model(images), target)
-        elif attack_criterion == 'invarkd':
-            adv_losses = invar_kd_attack(y_s, y_t, model(images), target)
-        elif attack_criterion == 'cos':
-            adv_losses = dis_attack(y_s, y_t, model(images), target)
-        else:
-            adv_losses = temp_criterion(model(images), target)
+        adv_losses = kd_attack(teacher(images), target)
 
         torch.mean(m * adv_losses).backward()
         grad = images.grad.detach()
@@ -297,14 +192,14 @@ def pgd_generator(images, ogimages, target, model, teacher, model_out, teacher_o
             images = step.step(images, grad)
             images = step.project(images)
             images = reconstruct_with_vqgan(images, vqgan_aug)
-
+            
             pred = (torch.argmax(teacher(images), 1) == target.transpose)
             if pred:
                 images = prev_images
                 break
             else:
                 prev_images = images.clone()
-
+            
     if prev_training:
         model.train()
     

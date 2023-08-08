@@ -6,7 +6,7 @@ from timm.loss.cross_entropy import LabelSmoothingCrossEntropy, SoftTargetCrossE
 
 from base_class import BaseClass
 
-class VanillaKD(BaseClass):
+class DADLoss(BaseClass):
     """
     Original implementation of Knowledge distillation from the paper "Distilling the
     Knowledge in a Neural Network" https://arxiv.org/pdf/1503.02531.pdf
@@ -39,7 +39,7 @@ class VanillaKD(BaseClass):
         log=False,
         logdir="./Experiments",
     ):
-        super(VanillaKD, self).__init__(
+        super(DADLoss, self).__init__(
             teacher_model,
             student_model,
             train_loader,
@@ -67,26 +67,11 @@ class VanillaKD(BaseClass):
         soft_student_aug_out = F.log_softmax(y_pred_aug / self.temp, dim=1)
         soft_student_out = F.log_softmax(y_pred_student / self.temp, dim=1)
         ce_loss = SoftTargetCrossEntropy()
-        #ce_loss = nn.CrossEntropyLoss()
-        
-        #kl_div = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
-        #kl_div2 = F.kl_div(F.log_softmax(y_pred_aug, dim=1),F.softmax(y_pred_teacher, dim=1),reduction='batchmean')
-
-        if mode == 'invarkd':
-            kl_div = self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
-            kl_div2 = self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_aug_out)
-            kl_div3 = self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_student_out)
-            loss = kl_div + kl_div2 + kl_div3
-            return loss
         
         kl_div = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
         kl_div2 = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_teacher_aug_out)
         loss = ce_loss(y_pred_student, y_true)
         loss += kl_div
         loss += kl_div2
-
-        if mode == 'final' or mode == 'ardwd':
-            dl = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_aug_out, soft_student_out)
-            loss += dl
 
         return loss

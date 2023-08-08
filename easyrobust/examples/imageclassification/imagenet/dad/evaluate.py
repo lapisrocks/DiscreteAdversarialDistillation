@@ -19,12 +19,14 @@ import logging
 from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
+import torchvision.datasets as datasets
+#from transformers import AutoFeatureExtractor, ViTMAEForPreTraining
 
 import torch
 import torch.nn as nn
 import torchvision.utils
-from torchvision import transforms
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
+from torchvision import transforms
 
 from timm.data import resolve_data_config, Mixup
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
@@ -38,8 +40,16 @@ from timm.data import create_transform
 from timm.data.distributed_sampler import OrderedDistributedSampler
 
 from easyrobust.datasets import ImageNetDataset
+
 from easyrobust import models
 from easyrobust.benchmarks import *
+from easyrobust.third_party.vqgan import VQModel, reconstruct_with_vqgan
+from easyrobust.attacks import pgd_generator
+
+from loss import DADLoss
+from os.path import exists
+
+import numpy as np
 
 try:
     from apex import amp
@@ -62,6 +72,8 @@ try:
 except ImportError:
     has_wandb = False
 
+has_wandb = False
+
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
 
@@ -77,7 +89,7 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 # Dataset / Model parameters
 parser.add_argument('--data_dir', metavar='DIR', default='',
                     help='path to dataset')
-parser.add_argument('--test_data', metavar='DIR', default='benchmarks/data',
+parser.add_argument('--test_data', metavar='DIR', default='',
                     help='path to dataset')
 parser.add_argument('--train-split', metavar='NAME', default='train',
                     help='dataset train split (default: train)')
@@ -269,7 +281,7 @@ parser.add_argument('--recovery-interval', type=int, default=0, metavar='N',
                     help='how many batches to wait before writing recovery checkpoint')
 parser.add_argument('--checkpoint-hist', type=int, default=10, metavar='N',
                     help='number of checkpoints to keep (default: 10)')
-parser.add_argument('-j', '--workers', type=int, default=4, metavar='N',
+parser.add_argument('-j', '--workers', type=int, default=8, metavar='N',
                     help='how many training processes to use (default: 4)')
 parser.add_argument('--save-images', action='store_true', default=False,
                     help='save images of input bathes every log interval for debugging')
@@ -293,14 +305,47 @@ parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_MET
                     help='Best metric (default: "top1"')
 parser.add_argument('--tta', type=int, default=0, metavar='N',
                     help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
-parser.add_argument("--local_rank", default=0, type=int)
+parser.add_argument('--local-rank', default=0, type=int, help='Node rank for distributed training')
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 parser.add_argument('--torchscript', dest='torchscript', action='store_true',
                     help='convert model torchscript for inference')
-parser.add_argument('--log-wandb', action='store_true', default=False,
+parser.add_argument('--log-wandb', action='store_true', default=True,
                     help='log training and validation metrics to wandb')
 
+parser.add_argument('--distill_from_teacher', type=bool, default=False,
+                    help='run knowledge distillation from trained teacher model')
+parser.add_argument('--teacher_path', default='', type=str, metavar='PATH',
+                    help='path to teacher model (default: none, current dir)')
+parser.add_argument('--teacher', default='vit_base_patch16_224', type=str, metavar='MODEL',
+                    help='Name of model to distill from (default: "resnet50"')
+parser.add_argument('--mode', default='kd', type=str,
+                    help='type of run')
+parser.add_argument('--scale_attack', type=bool, default=False,
+                    help='scale attack lr / step size during training')
+
+def normalize_fn(tensor, mean, std):
+    """Differentiable version of torchvision.functional.normalize"""
+    # here we assume the color channel is in at dim=1
+    mean = mean[None, :, None, None]
+    std = std[None, :, None, None]
+    return tensor.sub(mean).div(std)
+
+class NormalizeByChannelMeanStd(nn.Module):
+    def __init__(self, mean, std):
+        super(NormalizeByChannelMeanStd, self).__init__()
+        if not isinstance(mean, torch.Tensor):
+            mean = torch.tensor(mean)
+        if not isinstance(std, torch.Tensor):
+            std = torch.tensor(std)
+        self.register_buffer("mean", mean)
+        self.register_buffer("std", std)
+
+    def forward(self, tensor):
+        return normalize_fn(tensor, self.mean, self.std)
+
+    def extra_repr(self):
+        return 'mean={}, std={}'.format(self.mean, self.std)
 
 def _parse_args():
     # Do we have a config file to parse?
@@ -318,20 +363,15 @@ def _parse_args():
     args_text = yaml.safe_dump(args.__dict__, default_flow_style=False)
     return args, args_text
 
-def _merge(alpha, theta_0, theta_1):
-    # interpolate between all weights in the checkpoints
-    return {
-        'module.'+key: (1 - alpha) * theta_0[key] + alpha * theta_1[key]
-        for key in theta_0.keys()
-    }
 
 def main():
     setup_default_logging()
     args, args_text = _parse_args()
+    torch.autograd.set_detect_anomaly(True)
     
     if args.log_wandb:
         if has_wandb:
-            wandb.init(project=args.experiment, config=args)
+            wandb.init(project="im1k", config=args, name=args.experiment)
         else: 
             _logger.warning("You've requested to log metrics to wandb but package not found. "
                             "Metrics not being logged to wandb, try `pip install wandb`")
@@ -356,6 +396,8 @@ def main():
     else:
         _logger.info('Training with a single process on 1 GPUs.')
     assert args.rank >= 0
+    
+    print("World size", args.world_size)
 
     # resolve AMP arguments based on PyTorch / Apex availability
     use_amp = None
@@ -374,7 +416,7 @@ def main():
                         "Install NVIDA apex or upgrade to PyTorch 1.6")
 
     random_seed(args.seed, args.rank)
-
+    
     model = create_model(
         args.model,
         pretrained=args.pretrained,
@@ -387,11 +429,53 @@ def main():
         bn_momentum=args.bn_momentum,
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint)
+        checkpoint_path=None)
+    
+    teacher = create_model(
+        args.teacher,
+        pretrained=False,
+        num_classes=args.num_classes,
+        drop_rate=args.drop,
+        drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
+        drop_path_rate=args.drop_path,
+        drop_block_rate=args.drop_block,
+        global_pool=args.gp,
+        bn_momentum=args.bn_momentum,
+        bn_eps=args.bn_eps,
+        scriptable=args.torchscript,
+        checkpoint_path=None)
+    
+    print(args.teacher_path)
+
+    checkpoint = torch.load(args.initial_checkpoint)
+    state_dict = checkpoint["model"]
+    new_state_dict = {}
+
+    for k, v in state_dict.items():
+        # Remove '0.' or '1.' from the beginning of each key
+        name = k[2:] if k.startswith('0.') or k.startswith('1.') else k
+        if name not in ['mean', 'std']:
+            new_state_dict[name] = v
+
+    # Load the modified state_dict into the model
+    model.load_state_dict(new_state_dict)
+    
+    if args.teacher == 'clip_vit_large_patch14_224':
+        print("loading from teacher path")
+        teacher.load_state_dict(torch.load(args.teacher_path))
+    else:
+        raise Exception("Teacher model not defined")
+    
+    for param in teacher.parameters():
+        param.requires_grad = False
 
     if args.local_rank == 0:
         _logger.info(
             f'Model {safe_model_name(args.model)} created, param count:{sum([m.numel() for m in model.parameters()])}')
+        _logger.info(
+            f'Model {safe_model_name(args.teacher)} created, param count:{sum([m.numel() for m in teacher.parameters()])}')
+
+    data_config = resolve_data_config(vars(args), model=model, verbose=args.local_rank == 0)
 
     # setup augmentation batch splits for contrastive loss or split bn
     num_aug_splits = 0
@@ -404,13 +488,31 @@ def main():
         assert num_aug_splits > 1 or args.resplit
         model = convert_splitbn_model(model, max(num_aug_splits, 2))
 
+    normalize = NormalizeByChannelMeanStd(
+            mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    model = nn.Sequential(normalize, model)
+    
+    # optionally resume from a checkpoint
+    resume_epoch = None
+    if args.resume != '':
+        sd = torch.load(args.resume, map_location="cpu")
+    
+        for key in list(sd):
+            newKeyName = key[7:]
+            sd[newKeyName] = sd.pop(key)
+
+        model.load_state_dict(sd)
     # move model to GPU, enable channels last layout if set
     model.cuda()
     if args.channels_last:
         model = model.to(memory_format=torch.channels_last)
-
+    
+    teacher.cuda()
+    if args.channels_last:
+        teacher = teacher.to(memory_format=torch.channels_last)
+    
     # setup synchronized BatchNorm for distributed training
-    if args.distributed and args.sync_bn:
+    if args.distributed:
         assert not args.split_bn
         if has_apex and use_amp == 'apex':
             # Apex SyncBN preferred unless native amp is activated
@@ -445,16 +547,7 @@ def main():
     else:
         if args.local_rank == 0:
             _logger.info('AMP not enabled. Training in float32.')
-
-    # optionally resume from a checkpoint
-    resume_epoch = None
-    if args.resume:
-        resume_epoch = resume_checkpoint(
-            model, args.resume,
-            optimizer=None if args.no_resume_opt else optimizer,
-            loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
-
+    
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
     if args.model_ema:
@@ -463,6 +556,41 @@ def main():
             model, decay=args.model_ema_decay, device='cpu' if args.model_ema_force_cpu else None)
         if args.resume:
             load_checkpoint(model_ema.module, args.resume, use_ema=True)
+
+    prev_epoch = 0
+    output_dir = args.output + "/" + args.experiment
+    print(output_dir)
+    
+    if args.distributed:
+        if has_apex and use_amp == 'apex':
+            # Apex DDP preferred unless native amp is activated
+            if args.local_rank == 0:
+                _logger.info("Using NVIDIA APEX DistributedDataParallel.")
+            model = ApexDDP(model, delay_allreduce=True)
+        else:
+            if args.local_rank == 0:
+                _logger.info("Using native Torch DistributedDataParallel.")
+            model = NativeDDP(model, device_ids=[args.local_rank], broadcast_buffers=not args.no_ddp_bb)
+        # NOTE: EMA model does not need to be wrapped by DDP
+    if args.resume:
+        resume_epoch = resume_checkpoint(
+            model, args.resume,
+            optimizer=None if args.no_resume_opt else optimizer,
+            loss_scaler=None if args.no_resume_opt else loss_scaler,
+            log_info=args.local_rank == 0)
+    # setup learning rate schedule and starting epoch
+    lr_scheduler, num_epochs = create_scheduler(args, optimizer)
+    start_epoch = 0
+    if args.start_epoch is not None:
+        # a specified start_epoch will always override the resume epoch
+        start_epoch = args.start_epoch
+    elif resume_epoch is not None:
+        start_epoch = resume_epoch
+    if lr_scheduler is not None and start_epoch > 0:
+        lr_scheduler.step(start_epoch)
+
+    if args.local_rank == 0:
+        _logger.info('Scheduled epochs: {}'.format(num_epochs))
 
     # setup mixup / cutmix
     collate_fn = None
@@ -475,22 +603,74 @@ def main():
             label_smoothing=args.smoothing, num_classes=args.num_classes)
         mixup_fn = Mixup(**mixup_args)
 
+    # create data loaders w/ augmentation pipeiine
+    train_interpolation = args.train_interpolation
+    if args.no_aug or not train_interpolation:
+        train_interpolation = data_config['interpolation']
+
     train_transform = None
     val_transform = None
-
-    train_transform = model.train_preprocess
-    val_transform = model.val_preprocess
-
+    re_num_splits = 0
+    
+    if args.resplit:
+    # apply RE to second half of batch if no aug split otherwise line up with aug split
+        re_num_splits = num_aug_splits or 2
+    
+    train_transform = create_transform(
+        input_size=data_config['input_size'],
+        is_training=True,
+        use_prefetcher=False,
+        no_aug=args.no_aug,
+        scale=args.scale,
+        ratio=args.ratio,
+        hflip=args.hflip,
+        vflip=0.,
+        color_jitter=args.color_jitter,
+        auto_augment=args.aa,
+        interpolation=train_interpolation,
+        mean=data_config['mean'],
+        std=data_config['std'],
+        crop_pct=None,
+        tf_preprocessing=False,
+        re_prob=args.reprob,
+        re_mode=args.remode,
+        re_count=args.recount,
+        re_num_splits=re_num_splits,
+        separate=num_aug_splits > 0,
+    )
+    val_transform = create_transform(
+        input_size=data_config['input_size'],
+        is_training=False,
+        use_prefetcher=False,
+        no_aug=False,
+        scale=None,
+        ratio=False,
+        hflip=0.5,
+        vflip=0.,
+        color_jitter=0.4,
+        auto_augment=None,
+        interpolation=data_config['interpolation'],
+        mean=data_config['mean'],
+        std=data_config['std'],
+        crop_pct=data_config['crop_pct'],
+        tf_preprocessing=False,
+        re_prob=0.,
+        re_mode='const',
+        re_count=1,
+        re_num_splits=re_num_splits,
+        separate=num_aug_splits > 0,
+    )
+    
     print(train_transform)
     print(val_transform)
 
-    # create the train and eval datasets
-    dataset_train = ImageNetDataset(args.data_dir, split=args.train_split, transform=train_transform)
-    dataset_eval = ImageNetDataset(args.data_dir, split=args.val_split, transform=val_transform)
+    dataset_train = datasets.ImageFolder(args.data_dir + "/train", train_transform)
+    dataset_eval = datasets.ImageFolder(args.data_dir + "/val", val_transform)
 
     train_sampler = None
     eval_sampler = None
     if args.distributed:
+        print("Distributed sanpler")
         train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
         eval_sampler = OrderedDistributedSampler(dataset_eval)
 
@@ -516,33 +696,6 @@ def main():
         persistent_workers=True
     )
 
-    # setup distributed training
-    if args.distributed:
-        if has_apex and use_amp == 'apex':
-            # Apex DDP preferred unless native amp is activated
-            if args.local_rank == 0:
-                _logger.info("Using NVIDIA APEX DistributedDataParallel.")
-            model = ApexDDP(model, delay_allreduce=True)
-        else:
-            if args.local_rank == 0:
-                _logger.info("Using native Torch DistributedDataParallel.")
-            model = NativeDDP(model, device_ids=[args.local_rank], broadcast_buffers=not args.no_ddp_bb, find_unused_parameters=True)
-        # NOTE: EMA model does not need to be wrapped by DDP
-
-    # setup learning rate schedule and starting epoch
-    lr_scheduler, num_epochs = create_scheduler(args, optimizer)
-    start_epoch = 0
-    if args.start_epoch is not None:
-        # a specified start_epoch will always override the resume epoch
-        start_epoch = args.start_epoch
-    elif resume_epoch is not None:
-        start_epoch = resume_epoch
-    if lr_scheduler is not None and start_epoch > 0:
-        lr_scheduler.step(start_epoch)
-
-    if args.local_rank == 0:
-        _logger.info('Scheduled epochs: {}'.format(num_epochs))
-
     # setup loss function
     if args.jsd_loss:
         assert num_aug_splits > 1  # JSD only valid with aug splits set
@@ -562,108 +715,45 @@ def main():
         train_loss_fn = nn.CrossEntropyLoss()
     train_loss_fn = train_loss_fn.cuda()
     validate_loss_fn = nn.CrossEntropyLoss().cuda()
-
+    
+    print("Train loss", train_loss_fn)
+    print("Val loss", validate_loss_fn)
+    print("Starting training with, ", args.mode)
     # setup checkpoint saver and eval metric tracking
     eval_metric = args.eval_metric
     best_metric = None
     best_epoch = None
     saver = None
     output_dir = None
-
-    evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-    evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-    evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-    evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-    evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-    evaluate_objectnet(model, os.path.join(args.test_data, 'ObjectNet/images'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-
     if args.rank == 0:
         if args.experiment:
             exp_name = args.experiment
         else:
             exp_name = '-'.join([
                 datetime.now().strftime("%Y%m%d-%H%M%S"),
-                safe_model_name(args.model)
+                safe_model_name(args.model),
+                str(data_config['input_size'][-1])
             ])
         output_dir = get_outdir(args.output if args.output else './output/train', exp_name)
+        decreasing = True if eval_metric == 'loss' else False
+        saver = CheckpointSaver(
+            model=model, optimizer=optimizer, args=args, model_ema=model_ema, amp_scaler=loss_scaler,
+            checkpoint_dir=output_dir, recovery_dir=output_dir, decreasing=decreasing, max_history=args.checkpoint_hist)
         with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
             f.write(args_text)
-        torch.save(model.module.state_dict(), os.path.join(output_dir, 'zero_shot.pt'))
 
-    try:
-        for epoch in range(start_epoch, num_epochs):
-            if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
-                loader_train.sampler.set_epoch(epoch)
-
-            train_metrics = train_one_epoch(
-                epoch, model, loader_train, optimizer, train_loss_fn, args,
-                lr_scheduler=lr_scheduler, saver=saver, output_dir=output_dir,
-                amp_autocast=amp_autocast, loss_scaler=loss_scaler, model_ema=model_ema, mixup_fn=mixup_fn)
-
-            if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                if args.local_rank == 0:
-                    _logger.info("Distributing BatchNorm running means and vars")
-                distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
-            
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast)
-
-            if model_ema is not None and not args.model_ema_force_cpu:
-                if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                ema_eval_metrics = validate(
-                    model_ema.module, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
-                eval_metrics = ema_eval_metrics
-
-            if lr_scheduler is not None:
-                # step LR for next epoch
-                lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
-
-            if output_dir is not None:
-                update_summary(
-                    epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                    write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb)
-
-            evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-            evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-            evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-            evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-            evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-            evaluate_objectnet(model, os.path.join(args.test_data, 'ObjectNet/images'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-
-            if args.rank == 0:
-                with open(os.path.join(output_dir, 'args.yaml'), 'w') as f:
-                    f.write(args_text)
-                torch.save(model.module.state_dict(), os.path.join(output_dir, '{}.pt'.format(epoch)))
-
-        # interpolation
-        if args.rank == 0:
-            theta_0 = torch.load(os.path.join(output_dir, 'zero_shot.pt'))
-            theta_1 = torch.load(os.path.join(output_dir, '9.pt'))
-            model.eval()
-            for alpha in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-
-                theta = _merge(alpha, theta_0, theta_1)
-
-                # update the model (in-place) acccording to the new weights
-                model.load_state_dict(theta)
-
-                evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-                evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-                evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-                evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-                evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-                evaluate_objectnet(model, os.path.join(args.test_data, 'ObjectNet/images'), test_batchsize=args.batch_size*2, test_transform=val_transform)
-
-
-    except KeyboardInterrupt:
-        pass
-    
-
-
-
+        eval_metrics = validate(model, loader_eval, validate_loss_fn, args)
+        evaluate_imagenet_autoattack(model, os.path.join(args.data_dir, 'imagenet-val'), test_batchsize=args.batch_size, test_transform=val_transform)
+        # evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        # evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        # evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        # evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        # evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        # evaluate_stylized_imagenet(model, os.path.join(args.test_data, 'imagenet-style'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
+        # evaluate_imagenet_c(model, os.path.join(args.test_data, 'imagenet-c'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
 
 def train_one_epoch(
-        epoch, model, loader, optimizer, loss_fn, args,
+        epoch, model, teacher, loader, optimizer, loss_fn, args,
         lr_scheduler=None, saver=None, output_dir=None, amp_autocast=suppress,
         loss_scaler=None, model_ema=None, mixup_fn=None):
 
@@ -677,10 +767,31 @@ def train_one_epoch(
     losses_m = AverageMeter()
 
     model.train()
+    
+    teacher.eval()
+    for param in teacher.parameters():
+        param.requires_grad = False
+
+    ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
+    
+    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
+    vqgan_aug = vqgan_aug.cuda()
+    vqgan_aug.eval()
+    attack_lr = 0.1
+
+    if args.scale_attack:
+        attack_lr = 0.01
+        if epoch > 50:
+            attack_lr = 0.1
+        if epoch > 100:
+            attack_lr = 0.15
+        if epoch > 150:
+            attack_lr = 0.2
 
     end = time.time()
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
+    teacher_on_adv = []
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
@@ -694,7 +805,19 @@ def train_one_epoch(
 
         with amp_autocast():
             output = model(input)
-            loss = loss_fn(output, target)
+            teacher_output = teacher(input)
+
+        with torch.no_grad():
+            xrec = reconstruct_with_vqgan(input, vqgan_aug)
+
+        adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+        
+        with amp_autocast():
+            output2 = model(adv_xrec)
+            teacher_output2 = teacher(adv_xrec)
+            
+            kd_loss_fn = DADLoss(teacher, model, loader, None, None, optimizer)
+            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)
 
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
@@ -753,6 +876,10 @@ def train_one_epoch(
                         padding=0,
                         normalize=True)
 
+        if saver is not None and args.recovery_interval and (
+                last_batch or (batch_idx + 1) % args.recovery_interval == 0):
+            saver.save_recovery(epoch, batch_idx=batch_idx)
+
         if lr_scheduler is not None:
             lr_scheduler.step_update(num_updates=num_updates, metric=losses_m.avg)
 
@@ -761,7 +888,7 @@ def train_one_epoch(
 
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
-
+    
     return OrderedDict([('loss', losses_m.avg)])
 
 

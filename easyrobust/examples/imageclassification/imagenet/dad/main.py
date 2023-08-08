@@ -20,13 +20,13 @@ from collections import OrderedDict
 from contextlib import suppress
 from datetime import datetime
 import torchvision.datasets as datasets
+#from transformers import AutoFeatureExtractor, ViTMAEForPreTraining
 
 import torch
 import torch.nn as nn
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
-import torch.nn.functional as F
 
 from timm.data import resolve_data_config, Mixup
 from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
@@ -46,9 +46,10 @@ from easyrobust.benchmarks import *
 from easyrobust.third_party.vqgan import VQModel, reconstruct_with_vqgan
 from easyrobust.attacks import pgd_generator
 
-from vanillakd import VanillaKD
+from loss import DADLoss
 from os.path import exists
-from baseline_dist import *
+
+import numpy as np
 
 try:
     from apex import amp
@@ -70,6 +71,8 @@ try:
     has_wandb = True
 except ImportError:
     has_wandb = False
+
+has_wandb = False
 
 torch.backends.cudnn.benchmark = True
 _logger = logging.getLogger('train')
@@ -302,12 +305,12 @@ parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_MET
                     help='Best metric (default: "top1"')
 parser.add_argument('--tta', type=int, default=0, metavar='N',
                     help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
-parser.add_argument("--local_rank", default=0, type=int)
+parser.add_argument('--local-rank', default=0, type=int, help='Node rank for distributed training')
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 parser.add_argument('--torchscript', dest='torchscript', action='store_true',
                     help='convert model torchscript for inference')
-parser.add_argument('--log-wandb', action='store_true', default=False,
+parser.add_argument('--log-wandb', action='store_true', default=True,
                     help='log training and validation metrics to wandb')
 
 parser.add_argument('--distill_from_teacher', type=bool, default=False,
@@ -317,7 +320,7 @@ parser.add_argument('--teacher_path', default='', type=str, metavar='PATH',
 parser.add_argument('--teacher', default='vit_base_patch16_224', type=str, metavar='MODEL',
                     help='Name of model to distill from (default: "resnet50"')
 parser.add_argument('--mode', default='kd', type=str,
-                    help='type of run: kd, ard, ardwd, final, kdard, invarkd')
+                    help='type of run')
 parser.add_argument('--scale_attack', type=bool, default=False,
                     help='scale attack lr / step size during training')
 
@@ -368,7 +371,7 @@ def main():
     
     if args.log_wandb:
         if has_wandb:
-            wandb.init(project=args.experiment, config=args)
+            wandb.init(project="im1k", config=args, name=args.experiment)
         else: 
             _logger.warning("You've requested to log metrics to wandb but package not found. "
                             "Metrics not being logged to wandb, try `pip install wandb`")
@@ -413,7 +416,7 @@ def main():
                         "Install NVIDA apex or upgrade to PyTorch 1.6")
 
     random_seed(args.seed, args.rank)
-
+    
     model = create_model(
         args.model,
         pretrained=args.pretrained,
@@ -426,11 +429,11 @@ def main():
         bn_momentum=args.bn_momentum,
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
-        checkpoint_path=args.initial_checkpoint)
+        checkpoint_path=None)
     
     teacher = create_model(
         args.teacher,
-        pretrained=args.pretrained,
+        pretrained=False,
         num_classes=args.num_classes,
         drop_rate=args.drop,
         drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
@@ -441,12 +444,14 @@ def main():
         bn_eps=args.bn_eps,
         scriptable=args.torchscript,
         checkpoint_path=None)
-    
-    print(args.teacher_path)
 
+    model.load_state_dict(torch.load(args.initial_checkpoint))
+    
     if args.teacher == 'clip_vit_large_patch14_224':
         print("loading from teacher path")
         teacher.load_state_dict(torch.load(args.teacher_path))
+    else:
+        raise Exception("Teacher model not defined")
     
     for param in teacher.parameters():
         param.requires_grad = False
@@ -477,7 +482,7 @@ def main():
     # optionally resume from a checkpoint
     resume_epoch = None
     if args.resume != '':
-        sd = torch.load(args.resume, map_location="cuda")
+        sd = torch.load(args.resume, map_location="cpu")
     
         for key in list(sd):
             newKeyName = key[7:]
@@ -540,7 +545,8 @@ def main():
             load_checkpoint(model_ema.module, args.resume, use_ema=True)
 
     prev_epoch = 0
-    output_dir = get_outdir(args.output if args.output else './output/train', args.experiment)
+    output_dir = args.output + "/" + args.experiment
+    print(output_dir)
     
     if exists(output_dir + '/latest.pt'):
         print("loading from checkpoint")
@@ -548,6 +554,8 @@ def main():
         model.load_state_dict(sd['model'])
         optimizer.load_state_dict(sd['optimizer'])
         prev_epoch += sd['epoch']
+        print("past epochs", prev_epoch)
+        args.epochs -= prev_epoch
         del sd
 
     # setup distributed training
@@ -592,7 +600,6 @@ def main():
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.num_classes)
         mixup_fn = Mixup(**mixup_args)
-
 
     # create data loaders w/ augmentation pipeiine
     train_interpolation = args.train_interpolation
@@ -749,9 +756,8 @@ def main():
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
             
-            eval_metrics = validate(model, loader_eval, validate_loss_fn, args)
-            
             if epoch == 0:
+                print("Verifying teacher performance")
                 eval_metrics = validate(teacher, loader_eval, validate_loss_fn, args)
         
             if model_ema is not None and not args.model_ema_force_cpu:
@@ -779,12 +785,15 @@ def main():
                     'epoch': curr_epoch
                 }
                 torch.save(state, output_dir + '/latest.pt')
-                torch.save(state, output_dir + "/epoch" + str(epoch + prev_epoch) + ".pt")
+                if epoch % 5 == 0:
+                    torch.save(state, output_dir + "/epoch" + str(epoch + prev_epoch) + ".pt")
         evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
         evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
+        evaluate_stylized_imagenet(model, os.path.join(args.test_data, 'imagenet-style'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
+        evaluate_imagenet_c(model, os.path.join(args.test_data, 'imagenet-c'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
                 
     except KeyboardInterrupt:
         pass
@@ -812,10 +821,11 @@ def train_one_epoch(
     for param in teacher.parameters():
         param.requires_grad = False
 
-    end = time.time()
-    last_idx = len(loader) - 1
-    num_updates = epoch * len(loader)
-    teacher_on_adv = []
+    ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
+    
+    vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
+    vqgan_aug = vqgan_aug.cuda()
+    vqgan_aug.eval()
     attack_lr = 0.1
 
     if args.scale_attack:
@@ -827,6 +837,10 @@ def train_one_epoch(
         if epoch > 150:
             attack_lr = 0.2
 
+    end = time.time()
+    last_idx = len(loader) - 1
+    num_updates = epoch * len(loader)
+    teacher_on_adv = []
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
@@ -842,20 +856,17 @@ def train_one_epoch(
             output = model(input)
             teacher_output = teacher(input)
 
-            if args.mode == 'cos':
-                kd_loss_fn = DIST()
-                loss = kd_loss_fn(output, teacher_output, target)
-            else:
-                temp = 1.0
-                distill_loss = nn.KLDivLoss(reduction="batchmean", log_target=False)
+        with torch.no_grad():
+            xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
-                soft_teacher_out = F.softmax(teacher_output / temp, dim=1)
-                soft_student_out = F.log_softmax(output / temp, dim=1)
-                ce_loss = SoftTargetCrossEntropy()
-
-                kl_div = 0.5 * temp * temp * distill_loss(soft_student_out, soft_teacher_out)
-                loss = 0.5 * ce_loss(output, target)
-                loss += kl_div
+        adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+        
+        with amp_autocast():
+            output2 = model(adv_xrec)
+            teacher_output2 = teacher(adv_xrec)
+            
+            kd_loss_fn = DADLoss(teacher, model, loader, None, None, optimizer)
+            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)
 
         if not args.distributed:
             losses_m.update(loss.item(), input.size(0))
