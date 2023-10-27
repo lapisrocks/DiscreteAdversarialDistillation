@@ -24,13 +24,16 @@ import torchvision.datasets as datasets
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.utils
 from torch.nn.parallel import DistributedDataParallel as NativeDDP
 from torchvision import transforms
+from transformers import AutoFeatureExtractor, ViTMAEForPreTraining
+from torchvision.utils import save_image
 
 from timm.data import resolve_data_config, Mixup
-from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint,\
-    convert_splitbn_model, model_parameters
+from timm.models import create_model, safe_model_name, resume_checkpoint, load_checkpoint, model_parameters
+#from timm.layers import convert_splitbn_model
 from timm.utils import *
 from timm.loss import *
 from timm.optim import create_optimizer_v2, optimizer_kwargs
@@ -50,6 +53,7 @@ from loss import DADLoss
 from os.path import exists
 
 import numpy as np
+import re
 
 try:
     from apex import amp
@@ -65,12 +69,6 @@ try:
         has_native_amp = True
 except AttributeError:
     pass
-
-try:
-    import wandb
-    has_wandb = True
-except ImportError:
-    has_wandb = False
 
 has_wandb = False
 
@@ -89,6 +87,8 @@ parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 # Dataset / Model parameters
 parser.add_argument('--data_dir', metavar='DIR', default='',
                     help='path to dataset')
+parser.add_argument('--dad_dir', metavar='DIR', default='',
+                    help='path to dad samples')
 parser.add_argument('--test_data', metavar='DIR', default='',
                     help='path to dataset')
 parser.add_argument('--train-split', metavar='NAME', default='train',
@@ -305,7 +305,7 @@ parser.add_argument('--eval-metric', default='top1', type=str, metavar='EVAL_MET
                     help='Best metric (default: "top1"')
 parser.add_argument('--tta', type=int, default=0, metavar='N',
                     help='Test/inference time augmentation (oversampling) factor. 0=None (default: 0)')
-parser.add_argument('--local-rank', default=0, type=int, help='Node rank for distributed training')
+parser.add_argument("--local-rank", default=0, type=int)
 parser.add_argument('--use-multi-epochs-loader', action='store_true', default=False,
                     help='use the multi-epochs-loader to save time at the beginning of every epoch')
 parser.add_argument('--torchscript', dest='torchscript', action='store_true',
@@ -320,7 +320,7 @@ parser.add_argument('--teacher_path', default='', type=str, metavar='PATH',
 parser.add_argument('--teacher', default='vit_base_patch16_224', type=str, metavar='MODEL',
                     help='Name of model to distill from (default: "resnet50"')
 parser.add_argument('--mode', default='kd', type=str,
-                    help='type of run')
+                    help='type of run: kd, ard, ardwd, final, kdard, invarkd')
 parser.add_argument('--scale_attack', type=bool, default=False,
                     help='scale attack lr / step size during training')
 
@@ -417,9 +417,10 @@ def main():
 
     random_seed(args.seed, args.rank)
     
+    
     model = create_model(
-        args.model,
-        pretrained=args.pretrained,
+        "resnet50",
+        pretrained=True,
         num_classes=args.num_classes,
         drop_rate=args.drop,
         drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
@@ -433,7 +434,7 @@ def main():
     
     teacher = create_model(
         args.teacher,
-        pretrained=False,
+        pretrained=True,
         num_classes=args.num_classes,
         drop_rate=args.drop,
         drop_connect_rate=args.drop_connect,  # DEPRECATED, use drop_path
@@ -445,7 +446,7 @@ def main():
         scriptable=args.torchscript,
         checkpoint_path=None)
 
-    model.load_state_dict(torch.load(args.initial_checkpoint))
+    #model.load_state_dict(torch.load(args.initial_checkpoint))
     
     if args.teacher == 'clip_vit_large_patch14_224':
         print("loading from teacher path")
@@ -470,25 +471,11 @@ def main():
         assert args.aug_splits > 1, 'A split of 1 makes no sense'
         num_aug_splits = args.aug_splits
 
-    # enable split bn (separate bn stats per batch-portion)
-    if args.split_bn:
-        assert num_aug_splits > 1 or args.resplit
-        model = convert_splitbn_model(model, max(num_aug_splits, 2))
-
     normalize = NormalizeByChannelMeanStd(
             mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     model = nn.Sequential(normalize, model)
     
     # optionally resume from a checkpoint
-    resume_epoch = None
-    if args.resume != '':
-        sd = torch.load(args.resume, map_location="cpu")
-    
-        for key in list(sd):
-            newKeyName = key[7:]
-            sd[newKeyName] = sd.pop(key)
-
-        model.load_state_dict(sd)
     # move model to GPU, enable channels last layout if set
     model.cuda()
     if args.channels_last:
@@ -537,15 +524,9 @@ def main():
     
     # setup exponential moving average of model weights, SWA could be used here too
     model_ema = None
-    if args.model_ema:
-        # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
-        model_ema = ModelEmaV2(
-            model, decay=args.model_ema_decay, device='cpu' if args.model_ema_force_cpu else None)
-        if args.resume:
-            load_checkpoint(model_ema.module, args.resume, use_ema=True)
-
+    
     prev_epoch = 0
-    output_dir = args.output + "/" + args.experiment
+    output_dir = args.output + '/' + args.experiment
     print(output_dir)
     
     if exists(output_dir + '/latest.pt'):
@@ -570,22 +551,10 @@ def main():
                 _logger.info("Using native Torch DistributedDataParallel.")
             model = NativeDDP(model, device_ids=[args.local_rank], broadcast_buffers=not args.no_ddp_bb)
         # NOTE: EMA model does not need to be wrapped by DDP
-    if args.resume:
-        resume_epoch = resume_checkpoint(
-            model, args.resume,
-            optimizer=None if args.no_resume_opt else optimizer,
-            loss_scaler=None if args.no_resume_opt else loss_scaler,
-            log_info=args.local_rank == 0)
+    
     # setup learning rate schedule and starting epoch
     lr_scheduler, num_epochs = create_scheduler(args, optimizer)
     start_epoch = 0
-    if args.start_epoch is not None:
-        # a specified start_epoch will always override the resume epoch
-        start_epoch = args.start_epoch
-    elif resume_epoch is not None:
-        start_epoch = resume_epoch
-    if lr_scheduler is not None and start_epoch > 0:
-        lr_scheduler.step(start_epoch)
 
     if args.local_rank == 0:
         _logger.info('Scheduled epochs: {}'.format(num_epochs))
@@ -600,6 +569,7 @@ def main():
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.num_classes)
         mixup_fn = Mixup(**mixup_args)
+
 
     # create data loaders w/ augmentation pipeiine
     train_interpolation = args.train_interpolation
@@ -662,8 +632,8 @@ def main():
     print(train_transform)
     print(val_transform)
 
-    dataset_train = datasets.ImageFolder(args.data_dir + "/train", train_transform)
-    dataset_eval = datasets.ImageFolder(args.data_dir + "/val", val_transform)
+    dataset_train = datasets.ImageFolder("/scratch/bbsb/andyz3/data/imagenet/train", train_transform)
+    dataset_eval = datasets.ImageFolder("/scratch/bbsb/andyz3/data/imagenet/val", val_transform)
 
     train_sampler = None
     eval_sampler = None
@@ -742,6 +712,7 @@ def main():
 
     try:
         for epoch in range(start_epoch, num_epochs):
+                
             if args.distributed and hasattr(loader_train.sampler, 'set_epoch'):
                 print("Set epoch")
                 loader_train.sampler.set_epoch(epoch)
@@ -755,46 +726,7 @@ def main():
                 if args.local_rank == 0:
                     _logger.info("Distributing BatchNorm running means and vars")
                 distribute_bn(model, args.world_size, args.dist_bn == 'reduce')
-            
-            if epoch == 0:
-                print("Verifying teacher performance")
-                eval_metrics = validate(teacher, loader_eval, validate_loss_fn, args)
-        
-            if model_ema is not None and not args.model_ema_force_cpu:
-                if args.distributed and args.dist_bn in ('broadcast', 'reduce'):
-                    distribute_bn(model_ema, args.world_size, args.dist_bn == 'reduce')
-                ema_eval_metrics = validate(
-                    model_ema.module, loader_eval, validate_loss_fn, args, amp_autocast=amp_autocast, log_suffix=' (EMA)')
-                eval_metrics = ema_eval_metrics
 
-            if lr_scheduler is not None:
-                # step LR for next epoch
-                lr_scheduler.step(epoch + 1, eval_metrics[eval_metric])
-
-            if output_dir is not None:
-                update_summary(
-                    epoch, train_metrics, eval_metrics, os.path.join(output_dir, 'summary.csv'),
-                    write_header=best_metric is None, log_wandb=args.log_wandb and has_wandb)
-
-            if saver is not None:
-                # save proper checkpoint with eval metric
-                curr_epoch = epoch + prev_epoch
-                state = {
-                    'model': model.module.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'epoch': curr_epoch
-                }
-                torch.save(state, output_dir + '/latest.pt')
-                if epoch % 5 == 0:
-                    torch.save(state, output_dir + "/epoch" + str(epoch + prev_epoch) + ".pt")
-        evaluate_imagenet_val(model, os.path.join(args.test_data, 'imagenet-val'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-        evaluate_imagenet_a(model, os.path.join(args.test_data, 'imagenet-a'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-        evaluate_imagenet_r(model, os.path.join(args.test_data, 'imagenet-r'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-        evaluate_imagenet_sketch(model, os.path.join(args.test_data, 'imagenet-sketch'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-        evaluate_imagenet_v2(model, os.path.join(args.test_data, 'imagenetv2'), test_batchsize=args.batch_size*2, test_transform=val_transform, dist=True)
-        evaluate_stylized_imagenet(model, os.path.join(args.test_data, 'imagenet-style'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
-        evaluate_imagenet_c(model, os.path.join(args.test_data, 'imagenet-c'), test_batchsize=args.batch_size, test_transform=val_transform, dist=True)
-                
     except KeyboardInterrupt:
         pass
     if best_metric is not None:
@@ -824,6 +756,7 @@ def train_one_epoch(
     ddconfig = {'double_z': False, 'z_channels': 4, 'resolution': 256, 'in_channels': 3, 'out_ch': 3, 'ch': 128, 'ch_mult': [1,2,2,4], 'num_res_blocks': 2, 'attn_resolutions':[32], 'dropout': 0.0}
     
     vqgan_aug = VQModel(ddconfig, n_embed=16384, embed_dim=4, ckpt_path='http://alisec-competition.oss-cn-shanghai.aliyuncs.com/xiaofeng/easy_robust/pretrained_models/vqgan_openimages_f8_16384.ckpt')
+    
     vqgan_aug = vqgan_aug.cuda()
     vqgan_aug.eval()
     attack_lr = 0.1
@@ -841,9 +774,21 @@ def train_one_epoch(
     last_idx = len(loader) - 1
     num_updates = epoch * len(loader)
     teacher_on_adv = []
+
+    # you may want to use a counter to give a unique filename to each saved image triplet
+    image_counter = 0 
+    global_image_idx = 0
+
+    root_directory = args.dad_dir
+    if not os.path.exists(root_directory):
+        os.makedirs(root_directory)
+
     for batch_idx, (input, target) in enumerate(loader):
         last_batch = batch_idx == last_idx
         data_time_m.update(time.time() - end)
+        print("Starting new batch")
+
+        #print(target)
         
         input, target = input.cuda(), target.cuda()
         if mixup_fn is not None:
@@ -859,32 +804,28 @@ def train_one_epoch(
         with torch.no_grad():
             xrec = reconstruct_with_vqgan(input, vqgan_aug)
 
-        adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=attack_lr, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
-        
+        adv_xrec = pgd_generator(xrec, input, target, model, teacher, output, teacher_output, vqgan_aug, attack_type='L2', eps=0.1, attack_steps=1, attack_lr=0.01, random_start_prob=0.8, use_best=False, attack_criterion='kd', eval_mode=False)
+
+        for i in range(input.size(0)):
+            # Get class label for current image in the batch
+            label = target[i].item()
+            print(label)
+
+            # Create a directory for the class if it does not already exist
+            class_directory = os.path.join(root_directory, str(label))
+            if not os.path.exists(class_directory):
+                os.makedirs(class_directory)
+
+            # Generate a filename and save the image to its class folder
+            filename = f"dad_image_{global_image_idx}.png" 
+            save_path = os.path.join(class_directory, filename)
+            save_image(adv_xrec[i].cpu(), save_path)
+
+            # Increment the global image index
+            global_image_idx += 1
+
         with amp_autocast():
-            output2 = model(adv_xrec)
-            teacher_output2 = teacher(adv_xrec)
-            
-            kd_loss_fn = DADLoss(teacher, model, loader, None, None, optimizer)
-            loss = kd_loss_fn.calculate_kd_loss(output, teacher_output, teacher_output2, output2, target, args.mode)
-
-        if not args.distributed:
-            losses_m.update(loss.item(), input.size(0))
-
-        optimizer.zero_grad()
-        if loss_scaler is not None:
-            loss_scaler(
-                loss, optimizer,
-                clip_grad=args.clip_grad, clip_mode=args.clip_mode,
-                parameters=model_parameters(model, exclude_head='agc' in args.clip_mode),
-                create_graph=second_order)
-        else:
-            loss.backward(create_graph=second_order)
-            if args.clip_grad is not None:
-                dispatch_clip_grad(
-                    model_parameters(model, exclude_head='agc' in args.clip_mode),
-                    value=args.clip_grad, mode=args.clip_mode)
-            optimizer.step()
+            loss = None
 
         if model_ema is not None:
             model_ema.update(model)
@@ -896,35 +837,6 @@ def train_one_epoch(
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
 
-            if args.distributed:
-                reduced_loss = reduce_tensor(loss.data, args.world_size)
-                losses_m.update(reduced_loss.item(), input.size(0))
-
-            if args.local_rank == 0:
-                _logger.info(
-                    'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
-                    'Loss: {loss.val:#.4g} ({loss.avg:#.3g})  '
-                    'Time: {batch_time.val:.3f}s, {rate:>7.2f}/s  '
-                    '({batch_time.avg:.3f}s, {rate_avg:>7.2f}/s)  '
-                    'LR: {lr:.3e}  '
-                    'Data: {data_time.val:.3f} ({data_time.avg:.3f})'.format(
-                        epoch,
-                        batch_idx, len(loader),
-                        100. * batch_idx / last_idx,
-                        loss=losses_m,
-                        batch_time=batch_time_m,
-                        rate=input.size(0) * args.world_size / batch_time_m.val,
-                        rate_avg=input.size(0) * args.world_size / batch_time_m.avg,
-                        lr=lr,
-                        data_time=data_time_m))
-
-                if args.save_images and output_dir:
-                    torchvision.utils.save_image(
-                        input,
-                        os.path.join(output_dir, 'train-batch-%d.jpg' % batch_idx),
-                        padding=0,
-                        normalize=True)
-
         if saver is not None and args.recovery_interval and (
                 last_batch or (batch_idx + 1) % args.recovery_interval == 0):
             saver.save_recovery(epoch, batch_idx=batch_idx)
@@ -935,6 +847,7 @@ def train_one_epoch(
         end = time.time()
         # end for
 
+    print("Saving finished")
     if hasattr(optimizer, 'sync_lookahead'):
         optimizer.sync_lookahead()
     

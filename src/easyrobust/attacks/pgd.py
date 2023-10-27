@@ -141,7 +141,7 @@ def replace_best(loss, bloss, x, bx, m):
 
 def kd_attack(y_pred_teacher, y_true):
     temp = 4.0
-    ce_loss = SoftTargetCrossEntropy()
+    ce_loss = torch.nn.CrossEntropyLoss(reduction='none')
     loss = ce_loss(y_pred_teacher, y_true)
     return loss
 

@@ -54,7 +54,7 @@ class DADLoss(BaseClass):
             logdir,
         )
 
-    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_teacher_aug, y_pred_aug, y_true, mode):
+    def calculate_kd_loss(self, y_pred_student, y_pred_teacher, y_pred_teacher_aug, y_pred_aug, y_true):
         """
         Function used for calculating the KD loss during distillation
         :param y_pred_student (torch.FloatTensor): Prediction made by the student model
@@ -73,5 +73,23 @@ class DADLoss(BaseClass):
         loss = ce_loss(y_pred_student, y_true)
         loss += kl_div
         loss += kl_div2
+
+        return loss
+
+    def vanilla_kd_loss(self, y_pred_student, y_pred_teacher, y_true):
+        """
+        Function used for calculating the KD loss during distillation
+        :param y_pred_student (torch.FloatTensor): Prediction made by the student model
+        :param y_pred_teacher (torch.FloatTensor): Prediction made by the teacher model
+        :param y_true (torch.FloatTensor): Original label
+        """
+
+        soft_teacher_out = F.log_softmax(y_pred_teacher / self.temp, dim=1)
+        soft_student_out = F.log_softmax(y_pred_student / self.temp, dim=1)
+        ce_loss = SoftTargetCrossEntropy()
+        
+        kl_div = 0.5 * self.temp * self.temp * self.loss_fn(soft_student_out, soft_teacher_out)
+        loss = 0.5 * ce_loss(y_pred_student, y_true)
+        loss += kl_div
 
         return loss
