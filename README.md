@@ -23,12 +23,8 @@ https://drive.google.com/file/d/1I7h2oe-LP4djuMwFAwhD4kmvOrsgoDEN/view?usp=shari
 
 Scripts can be found in easyrobust/scripts
 
-ARD: Baseline knowledge distillation with DAT
+Please update the paths with your actual system path.
 
-KDARD: Knowledge distillation with DAT, distillation loss used to generate perturbation
+### DAD Samples
 
-ARDWD: Knowledge distillation with invariance loss. Also used to generate perturbation
-
-Final: Knowledge distillation with invariance loss. Perturbation generated with all three losses (CE, KD, Invar)
-
-RSLAD: Knowledge distillation without hard labels. Perturbation generated with KD and Invar loss. CE loss removed from objective
+We open source our set of DAD clip samples, from ImageNet. This can be found here.
