@@ -1,4 +1,4 @@
-# Distilling Out of Distribution Robustness from Vision-Language Foundation Models [NeurIPS 2023]
+# Distilling Out-of-Distribution Robustness from Vision-Language Foundation Models [NeurIPS 2023]
 
 ## Installation
 ### Install from Source:
