@@ -445,7 +445,8 @@ def main():
         scriptable=args.torchscript,
         checkpoint_path=None)
 
-    #model.load_state_dict(torch.load(args.initial_checkpoint))
+    if args.model == "vit_base_patch16_224":
+        model.load_state_dict(torch.load(args.initial_checkpoint))
     
     if args.teacher == 'clip_vit_large_patch14_224':
         print("loading from teacher path")
@@ -877,7 +878,7 @@ def train_one_epoch(
         
         loss1 = ce_loss(output, target)
         kd_loss_fn = DADLoss(teacher, model, loader, None, None, optimizer)
-        loss2 = kd_loss_fn.vanilla_kd_loss(output, teacher_output, None, None, target)
+        loss2 = kd_loss_fn.vanilla_kd_loss(output, teacher_output, target)
 
         loss = 0.5 * loss1 + 0.5 * loss2
 
