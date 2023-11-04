@@ -30,3 +30,15 @@ Please update the paths with your actual system path.
 ### DAD Samples
 
 We open source our set of DAD clip samples, from ImageNet. This will be released soon.
+
+```bibtex
+@inproceedings{
+    zhou2023distilling,
+    title={Distilling Out-of-Distribution Robustness from Vision-Language Foundation Models},
+    author={Andy Zhou and Jindong Wang and Yu-Xiong Wang and Haohan Wang},
+    booktitle={Thirty-seventh Conference on Neural Information Processing Systems},
+    year={2023},
+    url={https://openreview.net/forum?id=iwp3H8uSeK}
+}
+
+```
