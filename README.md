@@ -1,8 +1,8 @@
 # Distilling Out-of-Distribution Robustness from Vision-Language Foundation Models [NeurIPS 2023]
 
-https://arxiv.org/abs/2311.01441
-
 <img width="974" alt="image" src="https://github.com/andyz245/DiscreteAdversarialDistillation/assets/82240111/c8add5e7-4463-43ed-82fe-7125d700bd02">
+
+https://arxiv.org/abs/2311.01441
 
 ## Installation
 ### Install from Source:
