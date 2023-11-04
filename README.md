@@ -31,6 +31,10 @@ Please update the paths with your actual system path.
 
 We open source our set of DAD clip samples, from ImageNet. This will be released soon.
 
+### Citation
+
+If you found our paper or repo interesting, thanks! Please feel free to give us a star or cite our paper!
+
 ```bibtex
 @inproceedings{
     zhou2023distilling,
