@@ -1,5 +1,7 @@
 # Distilling Out-of-Distribution Robustness from Vision-Language Foundation Models [NeurIPS 2023]
 
+https://arxiv.org/abs/2311.01441
+
 ## Installation
 ### Install from Source:
 ```bash
