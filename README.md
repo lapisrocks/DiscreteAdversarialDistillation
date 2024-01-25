@@ -23,7 +23,6 @@ $ sh download_data.sh
 Teacher can be found at:
 https://drive.google.com/file/d/1I7h2oe-LP4djuMwFAwhD4kmvOrsgoDEN/view?usp=sharing
 
-Student models will be released soon.
 
 ## Running
 
@@ -31,9 +30,6 @@ Scripts can be found in easyrobust/scripts
 
 Please update the paths with your actual system path.
 
-### DAD Samples
-
-We open source our set of DAD clip samples, from ImageNet. This will be released soon.
 
 ### Citation
 
