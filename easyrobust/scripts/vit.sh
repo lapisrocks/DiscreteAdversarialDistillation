@@ -1,0 +1,37 @@
+python -m torch.distributed.launch --nproc_per_node=8 easyrobust/examples/imageclassification/imagenet/dat/main.py \
+--data_dir=imagenet_path/ImageNet \
+--test_data=imagenet_test_path/evaluation \
+--model=vit_base_patch16_224 \
+--initial-checkpoint=pretrainedmodelpath/pytorch_model.bin \
+--teacher=hf_hub:timm/vit_large_patch14_clip_224.laion2b_ft_in12k_in1k \
+--workers=2 \
+--epochs=30 \
+--batch-size=32 \
+--lr=0.0001 \
+--drop-path=0.25 \
+--model-ema \
+--model-ema-decay=0.99992 \
+--opt=adamw \
+--opt-eps=1e-8 \
+--weight-decay=0.05 \
+--sched=cosine \
+--warmup-lr=1e-6 \
+--warmup-epochs=5 \
+--cooldown-epochs=10 \
+--patience-epochs=10 \
+--color-jitter=0.4 \
+--aa=rand-m9-mstd0.5-inc1 \
+--smoothing=0.1 \
+--reprob=0.25 \
+--mixup=0.8 \
+--cutmix=1.0 \
+--pin-mem \
+--clip-grad=0.99 \
+--mean 0.0 0.0 0.0 \
+--std 1.0 1.0 1.0 \
+--distill_from_teacher=True \
+--scale_attack=False \
+--teacher_path=clip_path/clip_ft.bin \
+--mode=teacher \
+--output=output_path \
+--experiment=vitb_dat_ftclip

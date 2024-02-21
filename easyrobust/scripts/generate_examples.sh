@@ -1,0 +1,31 @@
+python -m torch.distributed.launch --nproc_per_node=4 easyrobust/examples/imageclassification/imagenet/dad/generate_examples.py \
+--data_dir=your_path_to_image_data \
+--dad_dir=your_path_to_dad_samples \
+--test_data=your_path_to_test_data \
+--model=resnet50 \
+--teacher=clip_vit_large_patch14_224 \
+--workers=16 \
+--epochs=1 \
+--batch-size=32 \
+--lr=0.001 \
+--drop-path=0.25 \
+--model-ema \
+--model-ema-decay=0.99992 \
+--opt=adamw \
+--opt-eps=1e-8 \
+--weight-decay=0.05 \
+--sched=cosine \
+--warmup-lr=1e-6 \
+--warmup-epochs=0 \
+--cooldown-epochs=0 \
+--patience-epochs=0 \
+--no-aug \
+--reprob=0.25 \
+--pin-mem \
+--clip-grad=0.9 \
+--mean 0.0 0.0 0.0 \
+--std 1.0 1.0 1.0 \
+--distill_from_teacher=True \
+--teacher_path=your_path_to_teacher_model \
+--output=. \
+--experiment=generate_dad
