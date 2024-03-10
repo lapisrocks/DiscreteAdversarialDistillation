@@ -23,6 +23,16 @@ $ sh download_data.sh
 Teacher can be found at:
 https://drive.google.com/file/d/1I7h2oe-LP4djuMwFAwhD4kmvOrsgoDEN/view?usp=sharing
 
+### Example Checkpoints
+
+Base ResNet50
+https://drive.google.com/file/d/1TGvOW6vit4wA1PlzOFomRnKUf1ZjxuWu/view?usp=sharing
+
+Base ViT-B-16/224
+https://drive.google.com/file/d/1ly0j_2nfphNgFd2NOJ0NhIea9o3JXqZ_/view?usp=sharing
+
+ResNet50 + DAD
+https://drive.google.com/file/d/1lbYzO7dp9xqwVMx2NOjPS_X9B3jh-LHv/view?usp=sharing
 
 ## Running
 
