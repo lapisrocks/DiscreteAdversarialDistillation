@@ -38,7 +38,7 @@ https://drive.google.com/file/d/1lbYzO7dp9xqwVMx2NOjPS_X9B3jh-LHv/view?usp=shari
 
 Scripts can be found in easyrobust/scripts
 
-Please update the paths with your actual system path.
+Please update the paths with your actual system path. To reproduce paper results, please initialize the model with the base pretrained ViT or ResNet50 models.
 
 
 ### Citation
